@@ -19,13 +19,19 @@ keywords = ["ethereum", "smart-contract", "security", "maian", "slither", "prodi
 
 # eth-* deps pinned to versions known compatible with Python 3.13+.
 # slither-analyzer transitively pulls in crytic-compile and solc-select.
+# web3 was previously pulled in only to fetch bytecode in address mode; that
+# read-only eth_getCode fetch now lives in evm-toolkit's stdlib-only RPC
+# client, so web3 is no longer a direct dependency.
 dependencies = [
     "slither-analyzer>=0.11.0",
     "pyevmasm>=0.2.3",
-    "web3>=7.0.0,<8",
     "eth-abi>=5.0.0,<6",
     "eth-utils>=5.0.0",
     "eth-typing>=5.0.0",
+    # Shared EVM/Solidity primitives (bytecode loading, eth_getCode, solc
+    # discovery), shared verbatim with oracle. Zero-dependency, stdlib-only
+    # RPC — adds nothing heavy to omen's environment.
+    "evm-toolkit @ git+https://github.com/bugsyhewitt/evm-toolkit",
 ]
 
 [project.optional-dependencies]

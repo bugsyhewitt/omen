@@ -10,16 +10,22 @@ mode). Source mode requires the user to have a solc available. omen makes
 this ergonomic: if solc-select has a version installed/selected, omen uses
 it; otherwise it raises a clear, actionable error. Bytecode and address
 modes never touch solc.]
+
+solc discovery now lives in the shared `evm-toolkit` library (shared with
+oracle). This module is a thin, omen-named adapter so existing imports
+(`from omen.solc_env import require_solc, SolcUnavailableError`) keep working.
 """
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 
-
-class SolcUnavailableError(RuntimeError):
-    """Raised when source-mode analysis is requested but no solc is on PATH."""
+# SolcUnavailableError is re-exported from evm_toolkit so that `except
+# SolcUnavailableError` callers (analyzer, cli) catch the same class the
+# shared discovery raises.
+from evm_toolkit import SolcUnavailableError as SolcUnavailableError
+from evm_toolkit import find_solc
+from evm_toolkit.source import solc_status as _solc_status
 
 
 @dataclass
@@ -30,24 +36,14 @@ class SolcStatus:
 
 def solc_status() -> SolcStatus:
     """Report whether a `solc` binary is reachable on PATH."""
-    path = shutil.which("solc")
-    return SolcStatus(available=path is not None, path=path)
+    status = _solc_status()
+    return SolcStatus(available=status.available, path=status.path)
 
 
 def require_solc() -> str:
     """Return the path to a usable solc, or raise SolcUnavailableError.
 
-    The error message tells the user exactly how to fix it using
-    solc-select, which ships as a dependency of slither.
+    Delegates to evm_toolkit.find_solc, whose error message points the user at
+    solc-select (bundled via slither).
     """
-    status = solc_status()
-    if status.available and status.path is not None:
-        return status.path
-    raise SolcUnavailableError(
-        "source-mode analysis needs a `solc` binary on PATH but none was found.\n"
-        "Install and select one with solc-select (bundled via slither):\n"
-        "    solc-select install 0.8.19\n"
-        "    solc-select use 0.8.19\n"
-        "Or analyze EVM bytecode / an on-chain address instead "
-        "(--input-type bytecode | address), which needs no solc."
-    )
+    return find_solc()
