@@ -1,0 +1,50 @@
+omen
+====
+
+omen is a bounty-oriented hybrid scanner for Ethereum trace vulnerabilities.
+It stands on the shoulders of prior art and open-source libraries listed below.
+
+------------------------------------------------------------------------------
+Prior art
+------------------------------------------------------------------------------
+
+MAIAN
+-----
+The prodigal / suicidal / greedy taxonomy of trace vulnerabilities, and the
+hybrid symbolic-analysis-plus-concrete-validation approach, originate from:
+
+    Ivica Nikolic, Aashish Kolluri, Ilya Sergey, Prateek Saxena, and Aquinas
+    Hobor. "Finding The Greedy, Prodigal, and Suicidal Contracts at Scale."
+    Proceedings of the 34th Annual Computer Security Applications Conference
+    (ACSAC 2018). (Also presented in the USENIX Security community context,
+    2018.)
+
+    Reference implementation: https://github.com/ivicanikolicsg/MAIAN
+
+omen reframes that taxonomy for modern EVM tooling and a web3-bounty workflow.
+omen does NOT reuse MAIAN's source code; it reimplements the detection on top
+of a modern, maintained analysis engine (Slither).
+
+------------------------------------------------------------------------------
+Libraries
+------------------------------------------------------------------------------
+
+Slither (slither-analyzer)
+--------------------------
+omen's source-mode detection is built on the Slither static analysis
+framework and its detector primitives.
+
+    Slither — https://github.com/crytic/slither
+    Copyright (c) Crytic / Trail of Bits
+    Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+omen invokes Slither as a library dependency. Users redistributing omen
+together with Slither must comply with Slither's AGPL-3.0 terms.
+
+Other dependencies (each under its own license):
+    pyevmasm   — EVM (dis)assembler (Trail of Bits)
+    web3.py    — Ethereum JSON-RPC client
+    eth-abi    — Ethereum ABI encoding/decoding
+    eth-utils, eth-typing — Ethereum Python utilities
+
+See each project's repository for full license text.
