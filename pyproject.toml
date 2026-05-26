@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omen"
+version = "0.1.0"
+description = "A bounty-oriented hybrid scanner for Ethereum trace vulnerabilities (the MAIAN class) with modern EVM support."
+readme = "README.md"
+# [Worker decision: criteria call for Python 3.13+. requires-python is set to
+# >=3.13 to honor that floor. The build/test environment had 3.14 available
+# (not 3.13 specifically); 3.14 satisfies >=3.13 and all eth-* / slither deps
+# resolve and pass cleanly there, so omen is validated on 3.14 while remaining
+# installable on 3.13.]
+requires-python = ">=3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "Bugsy Hewitt" }]
+keywords = ["ethereum", "smart-contract", "security", "maian", "slither", "prodigal", "suicidal", "greedy", "reentrancy"]
+
+# eth-* deps pinned to versions known compatible with Python 3.13+.
+# slither-analyzer transitively pulls in crytic-compile and solc-select.
+dependencies = [
+    "slither-analyzer>=0.11.0",
+    "pyevmasm>=0.2.3",
+    "web3>=7.0.0,<8",
+    "eth-abi>=5.0.0,<6",
+    "eth-utils>=5.0.0",
+    "eth-typing>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+omen = "omen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bugsyhewitt/omen"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+omen = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
