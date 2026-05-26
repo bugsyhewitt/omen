@@ -1,7 +1,7 @@
 """omen command-line interface.
 
     omen --contract <path-or-address> --input-type {sol,bytecode,address}
-         --check {prodigal,suicidal,greedy,reentrancy,all}
+         --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
          [--rpc-url URL] [--format {json,h1md}]
 
 Text in, text out. JSON is the default machine-readable format.
@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "omen — a bounty-oriented hybrid scanner for Ethereum trace "
             "vulnerabilities (the MAIAN class: prodigal, suicidal, greedy) "
-            "plus reentrancy. Analysis only; never submits transactions."
+            "plus reentrancy, access-control, and tx-origin misuse. "
+            "Analysis only; never submits transactions."
         ),
     )
     parser.add_argument(

@@ -4,10 +4,12 @@ omen reframes Slither's general-purpose detectors as the four MAIAN-class
 trace vulnerabilities omen specializes in. The category -> Slither-detector
 mapping is the heart of the tool.
 
-  prodigal   leaks Ether to arbitrary users     -> slither: arbitrary-send-eth
-  suicidal   can be killed by anyone            -> slither: suicidal
-  greedy     locks Ether (no release path)      -> slither: locked-ether
-  reentrancy classic withdraw-before-update     -> slither: reentrancy-eth, reentrancy-balance
+  prodigal       leaks Ether to arbitrary users     -> slither: arbitrary-send-eth
+  suicidal       can be killed by anyone            -> slither: suicidal
+  greedy         locks Ether (no release path)      -> slither: locked-ether
+  reentrancy     classic withdraw-before-update     -> slither: reentrancy-eth, reentrancy-balance
+  access-control missing/incorrect access checks    -> slither: protected-vars, events-access
+  tx-origin      tx.origin used for authentication  -> slither: tx-origin
 
 For bytecode/address input (no source), omen falls back to opcode-level
 evidence: the SELFDESTRUCT opcode is the bytecode signature of a suicidal
@@ -35,6 +37,20 @@ CATEGORY_TO_SLITHER: dict[str, list[str]] = {
     "suicidal": ["suicidal"],
     "greedy": ["locked-ether"],
     "reentrancy": ["reentrancy-eth", "reentrancy-balance"],
+    # [Worker decision (R2, POST_V01 Rank 2): the roadmap proposed mapping
+    # access-control onto a Slither detector literally named "access-control".
+    # No such ARGUMENT exists in slither-analyzer 0.11.x — Slither has no single
+    # "access-control" detector; the access-control concept is split across
+    # several detectors. The two that flag missing/incorrect access restrictions
+    # without overlapping omen's existing categories are:
+    #   - protected-vars: state vars that should be protected but are writable
+    #     by an unguarded function (the core "missing onlyOwner" signal).
+    #   - events-access: admin/access-control changes that fail to emit events.
+    # (suicidal — "anyone can destruct" — is itself an access-control failure but
+    # is already owned by the `suicidal` category, so it is intentionally not
+    # remapped here to avoid duplicate findings.)]
+    "access-control": ["protected-vars", "events-access"],
+    "tx-origin": ["tx-origin"],
 }
 
 

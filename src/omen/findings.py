@@ -30,6 +30,12 @@ DEFAULT_SEVERITY = {
     "suicidal": Severity.HIGH,
     "greedy": Severity.MEDIUM,
     "reentrancy": Severity.HIGH,
+    # access-control is the #1 loss category by volume (OWASP 2025/2026,
+    # $953M tracked): a missing owner/role guard on a privileged function is
+    # high-severity by default. tx.origin auth misuse is a persistent
+    # medium-severity finding (exploitable only via a phishing/relay flow).
+    "access-control": Severity.HIGH,
+    "tx-origin": Severity.MEDIUM,
 }
 
 

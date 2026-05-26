@@ -34,6 +34,18 @@ _REMEDIATION = {
         "Apply checks-effects-interactions: update state before the external "
         "call, or use a reentrancy guard (e.g. OpenZeppelin ReentrancyGuard)."
     ),
+    "access-control": (
+        "Restrict privileged functions and protected state with an explicit "
+        "access guard (e.g. an `onlyOwner` modifier or OpenZeppelin "
+        "AccessControl roles), and emit an event whenever ownership or a role "
+        "changes so off-chain monitors can detect unauthorized changes."
+    ),
+    "tx-origin": (
+        "Never use `tx.origin` for authorization — it is the original external "
+        "account, not the immediate caller, so an attacker contract a victim "
+        "interacts with can act on the victim's behalf. Use `msg.sender` "
+        "instead (and a role/owner check on top of it)."
+    ),
 }
 
 

@@ -2,7 +2,7 @@
 
 **omen** is a bounty-oriented hybrid scanner for Ethereum **trace vulnerabilities** — the MAIAN class — with modern EVM support. It is built for web3 bug-bounty work, not as yet-another general-purpose linter.
 
-It detects four classes of contract that leak, lock, or surrender funds, and reports each finding with reproducibility evidence (source locations or bytecode opcode offsets).
+It detects classes of contract that leak, lock, or surrender funds — plus the two highest-loss authorization bugs, broken access control and `tx.origin` misuse — and reports each finding with reproducibility evidence (source locations or bytecode opcode offsets).
 
 omen builds on [Slither](https://github.com/crytic/slither) for source analysis and on [`pyevmasm`](https://github.com/crytic/pyevmasm) for bytecode disassembly. The trace-vulnerability taxonomy comes from MAIAN (Nikolić et al., 2018) — see [`NOTICE`](./NOTICE).
 
@@ -10,7 +10,9 @@ omen builds on [Slither](https://github.com/crytic/slither) for source analysis 
 
 ---
 
-## The four detection classes
+## The detection classes
+
+The four MAIAN trace-vulnerability classes plus reentrancy:
 
 | Class | What it means | omen detects via |
 |---|---|---|
@@ -18,6 +20,15 @@ omen builds on [Slither](https://github.com/crytic/slither) for source analysis 
 | **suicidal** | Can be destroyed (`selfdestruct`) by anyone — the Parity wallet incident | Slither `suicidal`; bytecode `SELFDESTRUCT` opcode |
 | **greedy** | Can receive Ether but has no reachable path to release it — funds locked forever | Slither `locked-ether` |
 | **reentrancy** | Classic withdraw-before-state-update bug behind the DAO hack | Slither `reentrancy-eth`, `reentrancy-balance` |
+
+Plus the two highest-loss authorization classes (added in R2):
+
+| Class | What it means | omen detects via |
+|---|---|---|
+| **access-control** | Privileged state/functions missing or misusing access restrictions — OWASP's #1 loss category (Smart Contract Top 10 2025/2026) | Slither `protected-vars`, `events-access` |
+| **tx-origin** | `tx.origin` used for authentication, exploitable via a phishing-relay attack | Slither `tx-origin` |
+
+> **access-control note.** Slither's high-confidence `protected-vars` detector keys off the `@custom:security write-protection="onlyOwner()"` NatSpec annotation on the state variable that gates access: it flags any function that writes that variable *without* going through the named guard. Annotate the variables you intend to protect and omen will catch the missing guard. `events-access` complements it by flagging admin/ownership changes that emit no event.
 
 ---
 
@@ -51,7 +62,7 @@ need **no** `solc`.
 ```
 omen --contract <path-or-address> \
      --input-type {sol,bytecode,address} \
-     --check {prodigal,suicidal,greedy,reentrancy,all} \
+     --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all} \
      [--rpc-url URL] \
      [--format {json,h1md}]
 ```
@@ -91,6 +102,24 @@ omen --contract tests/fixtures/vulnerable-greedy.sol \
 omen --contract tests/fixtures/vulnerable-reentrancy.sol \
      --input-type sol --check reentrancy --format json
 ```
+
+**access-control** (source mode):
+
+```bash
+omen --contract tests/fixtures/vulnerable-access-control.sol \
+     --input-type sol --check access-control --format h1md
+```
+
+**tx-origin** (source mode):
+
+```bash
+omen --contract tests/fixtures/vulnerable-tx-origin.sol \
+     --input-type sol --check tx-origin --format json
+```
+
+> access-control and tx-origin are **source-mode** checks (they need Slither's
+> static analysis); they are not detectable from raw bytecode alone, so they
+> produce no findings in `--input-type bytecode`/`address` mode.
 
 ### Bytecode mode (no solc)
 
@@ -143,12 +172,13 @@ detection. It never sends a transaction.
 
 ---
 
-## Scope (v0.1)
+## Scope
 
-In scope: the four classes above, on Ethereum, from Solidity source / EVM
-bytecode / an on-chain address (read-only).
+In scope: the classes above (the four MAIAN classes, reentrancy, access-control,
+and tx-origin), on Ethereum, from Solidity source / EVM bytecode / an on-chain
+address (read-only). access-control and tx-origin are source-mode only.
 
-Not in v0.1: a custom symbolic-execution engine (omen uses Slither's), non-
+Not in scope: a custom symbolic-execution engine (omen uses Slither's), non-
 Ethereum chains, DeFi-specific patterns (oracle manipulation, flash loans,
 MEV), automated proof-of-concept transaction generation, and any on-chain
 transaction submission whatsoever.

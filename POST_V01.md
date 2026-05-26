@@ -71,6 +71,19 @@ Closing this gap immediately multiplies omen's useful surface area.
 
 **Rank: 2 — highest-impact new category by loss volume**
 
+> **STATUS: ✅ IMPLEMENTED (R2, 2026-05-26).** Both classes are wired through
+> `CATEGORIES`, `CATEGORY_TO_SLITHER`, `DEFAULT_SEVERITY` (access-control →
+> high, tx-origin → medium), the CLI `--check` choices, and the `formats.py`
+> remediation table. Fixtures (`vulnerable-access-control.sol`,
+> `vulnerable-tx-origin.sol`, `clean-access-control.sol`) and tests
+> (`tests/test_access_control_detection.py`, `tests/test_new_categories_wiring.py`)
+> ship with it. **Mapping correction:** the Slither argument literally named
+> `access-control` does not exist in slither-analyzer 0.11.x; access-control is
+> mapped onto `protected-vars` (HIGH/HIGH — the canonical missing-onlyOwner
+> signal, keyed off the `@custom:security write-protection` NatSpec annotation)
+> plus `events-access` (missing event on admin/ownership change). tx-origin
+> maps onto `tx-origin` as planned.
+
 **What:** Add two new detection classes:
 - `access-control`: maps to Slither `access-control` (missing function access
   restrictions) and `events-access` (missing events on admin changes).
@@ -239,7 +252,7 @@ land.
 
 | Sprint | Items | Expected output |
 |---|---|---|
-| R2 | #2 (access-control, tx-origin) | Two new classes, tests pass, README updated |
+| R2 | #2 (access-control, tx-origin) ✅ done | Two new classes, tests pass, README updated |
 | R3 | #1 (bytecode heuristics) | Bytecode mode covers all 4+2 classes |
 | R4 | #3 (batch mode) | `--batch` flag, JSONL output |
 | R5 | #4 (delegatecall/upgrade) | Two more high-sev classes |

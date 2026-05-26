@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from omen import CATEGORIES
 from omen.findings import DEFAULT_SEVERITY, Evidence, Finding, Severity
 
 
@@ -11,7 +12,9 @@ def test_severity_values():
 
 
 def test_default_severity_covers_all_categories():
-    for cat in ("prodigal", "suicidal", "greedy", "reentrancy"):
+    # DEFAULT_SEVERITY must stay in lockstep with CATEGORIES so every check
+    # the CLI accepts has a defined fallback severity.
+    for cat in CATEGORIES:
         assert cat in DEFAULT_SEVERITY
         assert isinstance(DEFAULT_SEVERITY[cat], Severity)
 
