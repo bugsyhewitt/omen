@@ -15,7 +15,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import CATEGORIES, __version__
-from .detectors import scan_bytecode_opcodes, slither_detector_classes
+from .detectors import (
+    scan_bytecode_opcodes,
+    scan_greedy,
+    scan_prodigal,
+    scan_reentrancy,
+    slither_detector_classes,
+)
 from .findings import DEFAULT_SEVERITY, Evidence, Finding, Severity
 from .solc_env import require_solc
 from .sources import SourceInput, load_input
@@ -144,40 +150,124 @@ def _extract_contract_name(raw: dict[str, Any]) -> str | None:
     return None
 
 
-def _analyze_bytecode(src: SourceInput, checks: list[str]) -> list[Finding]:
-    """Run opcode-signature scanning for bytecode / address input.
+# The precision caveat appended to every low-confidence bytecode heuristic.
+# POST_V01 Rank 1 requires these opcode heuristics to be reported honestly:
+# they trade precision for address-mode recall, and source mode is better.
+_HEURISTIC_CAVEAT = (
+    " This is a coarse opcode-level heuristic for bytecode/address mode and "
+    "may be a false positive; running omen on the contract's source provides "
+    "higher-precision analysis."
+)
 
-    For v0.1, opcode-level evidence covers the suicidal class via the
-    SELFDESTRUCT opcode. If suicidal is not among the requested checks,
-    no bytecode findings are produced (and that's reported honestly).
+
+def _analyze_bytecode(src: SourceInput, checks: list[str]) -> list[Finding]:
+    """Run opcode-level scanning for bytecode / address input.
+
+    The suicidal class has a precise bytecode signature (the SELFDESTRUCT
+    opcode), reported at high confidence. For prodigal, greedy, and
+    reentrancy (POST_V01 Rank 1) omen falls back to coarse opcode-pattern
+    heuristics reported at LOW confidence — they exist so that on-chain,
+    source-unverified contracts produce triage leads instead of silent
+    misses, while honestly flagging that source-mode is more precise.
     """
     assert src.bytecode is not None
     findings: list[Finding] = []
-    if "suicidal" not in checks:
-        return findings
+    contract = src.address if src.address else None
+    bytecode = src.bytecode
 
-    hits = scan_bytecode_opcodes(src.bytecode)
-    suicidal_hits = [h for h in hits if h["category"] == "suicidal"]
-    if suicidal_hits:
-        offsets = ", ".join(f"0x{h['offset']:x}" for h in suicidal_hits)
-        contract = src.address if src.address else None
-        findings.append(
-            Finding(
-                category="suicidal",
-                severity=DEFAULT_SEVERITY["suicidal"],
-                title="suicidal contract (selfdestruct opcode present)",
-                description=(
-                    "The deployed bytecode contains a SELFDESTRUCT opcode at "
-                    f"offset(s) {offsets}. If the path reaching it lacks access "
-                    "control, anyone can destroy the contract (the MAIAN "
-                    "'suicidal' class, e.g. the Parity multisig incident)."
-                ),
-                detector="omen:bytecode-selfdestruct",
-                contract=contract,
-                confidence="high",
-                evidence=Evidence(opcodes=suicidal_hits),
+    if "suicidal" in checks:
+        hits = scan_bytecode_opcodes(bytecode)
+        suicidal_hits = [h for h in hits if h["category"] == "suicidal"]
+        if suicidal_hits:
+            offsets = ", ".join(f"0x{h['offset']:x}" for h in suicidal_hits)
+            findings.append(
+                Finding(
+                    category="suicidal",
+                    severity=DEFAULT_SEVERITY["suicidal"],
+                    title="suicidal contract (selfdestruct opcode present)",
+                    description=(
+                        "The deployed bytecode contains a SELFDESTRUCT opcode "
+                        f"at offset(s) {offsets}. If the path reaching it lacks "
+                        "access control, anyone can destroy the contract (the "
+                        "MAIAN 'suicidal' class, e.g. the Parity multisig "
+                        "incident)."
+                    ),
+                    detector="omen:bytecode-selfdestruct",
+                    contract=contract,
+                    confidence="high",
+                    evidence=Evidence(opcodes=suicidal_hits),
+                )
             )
-        )
+
+    if "prodigal" in checks:
+        hits = scan_prodigal(bytecode)
+        if hits:
+            offsets = ", ".join(f"0x{h['offset']:x}" for h in hits)
+            findings.append(
+                Finding(
+                    category="prodigal",
+                    severity=DEFAULT_SEVERITY["prodigal"],
+                    title="prodigal contract (caller-controlled value transfer)",
+                    description=(
+                        "A CALL with a non-zero value argument and a "
+                        "caller-controlled (CALLDATALOAD-derived) destination "
+                        f"was found at offset(s) {offsets}. If unguarded, this "
+                        "lets an arbitrary caller redirect the contract's ether "
+                        "(the MAIAN 'prodigal' class)." + _HEURISTIC_CAVEAT
+                    ),
+                    detector="omen:bytecode-prodigal",
+                    contract=contract,
+                    confidence="low",
+                    evidence=Evidence(opcodes=hits),
+                )
+            )
+
+    if "greedy" in checks:
+        hits = scan_greedy(bytecode)
+        if hits:
+            offsets = ", ".join(f"0x{h['offset']:x}" for h in hits)
+            findings.append(
+                Finding(
+                    category="greedy",
+                    severity=DEFAULT_SEVERITY["greedy"],
+                    title="greedy contract (accepts ether, no release path)",
+                    description=(
+                        "The bytecode inspects CALLVALUE (payable) at "
+                        f"offset(s) {offsets} but contains no value-sending "
+                        "opcode (CALL/CALLCODE/DELEGATECALL/SELFDESTRUCT). Ether "
+                        "can enter but has no way out (the MAIAN 'greedy' / "
+                        "locked-ether class)." + _HEURISTIC_CAVEAT
+                    ),
+                    detector="omen:bytecode-greedy",
+                    contract=contract,
+                    confidence="low",
+                    evidence=Evidence(opcodes=hits),
+                )
+            )
+
+    if "reentrancy" in checks:
+        hits = scan_reentrancy(bytecode)
+        if hits:
+            offsets = ", ".join(f"0x{h['offset']:x}" for h in hits)
+            findings.append(
+                Finding(
+                    category="reentrancy",
+                    severity=DEFAULT_SEVERITY["reentrancy"],
+                    title="reentrancy contract (state write after external call)",
+                    description=(
+                        "An SSTORE follows a CALL before the next segment "
+                        f"terminator at offset(s) {offsets} — a "
+                        "checks-effects-interactions violation that can enable "
+                        "reentrancy (the classic withdraw-before-update bug)."
+                        + _HEURISTIC_CAVEAT
+                    ),
+                    detector="omen:bytecode-reentrancy",
+                    contract=contract,
+                    confidence="low",
+                    evidence=Evidence(opcodes=hits),
+                )
+            )
+
     return findings
 
 

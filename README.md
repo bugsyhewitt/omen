@@ -132,6 +132,22 @@ omen --contract tests/fixtures/compiled.bin \
      --input-type bytecode --check suicidal
 ```
 
+Bytecode/address mode covers all four MAIAN-class checks via opcode-level
+analysis:
+
+| Check | Bytecode signal | Confidence |
+|---|---|---|
+| **suicidal** | `SELFDESTRUCT` opcode present | high |
+| **prodigal** | `CALL` with non-zero value to a caller-controlled (`CALLDATALOAD`-derived) destination | low |
+| **greedy** | reads `CALLVALUE` (payable) but has no value-sending opcode (`CALL`/`DELEGATECALL`/`CALLCODE`/`SELFDESTRUCT`) | low |
+| **reentrancy** | `SSTORE` after a `CALL` before the next `RETURN`/`STOP`/`REVERT` (checks-effects-interactions violation) | low |
+
+> The prodigal/greedy/reentrancy bytecode heuristics are coarse opcode patterns,
+> not full data-flow analysis. They report at **`confidence: low`** with an
+> explicit caveat in each finding: when source is available, source mode (which
+> uses Slither) is more precise. Their purpose is to give a bounty hunter a
+> triage lead on source-unverified on-chain contracts instead of a silent miss.
+
 ### Address mode (read-only, requires --rpc-url)
 
 ```bash
