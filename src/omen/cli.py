@@ -4,7 +4,11 @@
          --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
          [--rpc-url URL] [--format {json,h1md}]
 
+    omen --batch <dir-or-list-file> --input-type {sol,address}
+         --check {...} [--rpc-url URL]
+
 Text in, text out. JSON is the default machine-readable format.
+Batch mode always emits JSONL (one JSON object per contract).
 """
 
 from __future__ import annotations
@@ -28,10 +32,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"omen {__version__}"
     )
-    parser.add_argument(
+
+    # --contract and --batch are mutually exclusive; exactly one is required.
+    target_group = parser.add_mutually_exclusive_group(required=True)
+    target_group.add_argument(
         "--contract",
-        required=True,
         help="path to a .sol or .bin file, OR an on-chain contract address",
+    )
+    target_group.add_argument(
+        "--batch",
+        metavar="PATH",
+        help=(
+            "directory of .sol files (scanned recursively) or a newline-delimited "
+            "file of contract addresses / .sol paths. Emits JSONL output "
+            "(one JSON object per contract) to stdout."
+        ),
     )
     parser.add_argument(
         "--input-type",
@@ -70,6 +85,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.input_type == "address" and not args.rpc_url:
         parser.error("--input-type address requires --rpc-url")
 
+    # --- Batch mode ---
+    if args.batch is not None:
+        from .batch import run_batch
+
+        return run_batch(
+            path=args.batch,
+            input_type=args.input_type,
+            check=args.check,
+            rpc_url=args.rpc_url,
+        )
+
+    # --- Single-contract mode ---
     # Import the heavy analysis stack lazily so --help / --version are fast.
     from .analyzer import analyze
     from .formats import render

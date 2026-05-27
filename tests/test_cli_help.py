@@ -19,6 +19,7 @@ def test_help_lists_required_flags():
     text = _help_text()
     for token in (
         "--contract",
+        "--batch",
         "--input-type",
         "--check",
         "--rpc-url",
