@@ -107,6 +107,8 @@ omen --contract <path-or-address> \
      [--rpc-url URL] \
      [--format {json,h1md,sarif}] \
      [--min-confidence {low,medium,high}]
+
+omen --list-checks [--format {text,json}]
 ```
 
 - `--contract` — a path to a `.sol` source file, a path to a `.vy` (Vyper) source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
@@ -115,6 +117,39 @@ omen --contract <path-or-address> \
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
 - `--format` — `json` (machine-readable, default), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
+- `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
+
+### Listing the detection classes
+
+Before a scan you can ask omen exactly what it can detect and how each class
+maps onto Slither's detectors (those mappings are non-obvious — `access-control`,
+for example, is backed by `protected-vars` + `events-access`, because Slither
+has no detector literally named `access-control`):
+
+```bash
+omen --list-checks
+```
+
+```
+omen 0.1.0 — 10 detection classes
+
+CATEGORY         SEVERITY  MODES                          SLITHER DETECTORS
+---------------------------------------------------------------------------
+prodigal         high      sol, vyper, bytecode, address  arbitrary-send-eth
+suicidal         high      sol, bytecode, address         suicidal
+greedy           medium    sol, bytecode, address         locked-ether
+reentrancy       high      sol, vyper, bytecode, address  reentrancy-eth, reentrancy-balance
+access-control   high      sol                            protected-vars, events-access
+tx-origin        medium    sol                            tx-origin
+delegatecall     high      sol                            controlled-delegatecall, delegatecall-loop
+upgrade          high      sol                            unprotected-upgrade
+overflow         medium    sol                            divide-before-multiply, tautology
+weak-randomness  medium    sol                            weak-prng
+```
+
+For tooling, `--list-checks --format json` emits the same catalog as a JSON
+document (`{tool, version, check_count, checks: [...]}`). The listing runs
+offline with no compiler or RPC, so it works in CI and on a fresh checkout.
 
 ### One example per class
 

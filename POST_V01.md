@@ -324,9 +324,48 @@ land.
 | Sprint | Items | Expected output |
 |---|---|---|
 | R2 | #2 (access-control, tx-origin) ✅ done | Two new classes, tests pass, README updated |
-| R3 | #1 (bytecode heuristics) | Bytecode mode covers all 4+2 classes |
-| R4 | #3 (batch mode) | `--batch` flag, JSONL output |
-| R5 | #4 (delegatecall/upgrade) | Two more high-sev classes |
+| R3 | #1 (bytecode heuristics) ✅ done | Bytecode mode covers all 4+2 classes |
+| R4 | #3 (batch mode) ✅ done | `--batch` flag, JSONL output |
+| R5 | #4 (delegatecall/upgrade) ✅ done | Two more high-sev classes |
 | R6 | #5 (SARIF) ✅ done | SARIF formatter |
-| R7 | #6 (Vyper) | `--input-type vyper` |
-| R8 | #7 + #8 | overflow/PRNG + confidence filter |
+| R7 | #6 (Vyper) ✅ done | `--input-type vyper` |
+| R8 | #7 + #8 ✅ done | overflow/PRNG + confidence filter |
+
+> **Rotation 1 roadmap exhausted (as of R9, 2026-05-28).** All eight ranked
+> items above are implemented and merged. The items below are Rotation 2
+> additions — discoverability/UX improvements that fall out of the now-larger
+> detector surface. They are appended here rather than in a separate file so
+> the roadmap history stays in one place; a full Rotation 2 research lap (new
+> threat-landscape scan + re-ranking) is still owed.
+
+---
+
+## Rotation 2 additions
+
+### R2.1. `--list-checks` detector catalog introspection
+
+**Rank: 1 (Rotation 2) — zero-dependency discoverability**
+
+> **STATUS: ✅ IMPLEMENTED (R9, 2026-05-28).** `omen --list-checks` prints every
+> detection class with its default severity, the input modes it runs in
+> (`sol` / `vyper` / `bytecode` / `address`), and the underlying Slither
+> detector(s) it maps to, then exits. Honors `--format text` (default) or
+> `--format json`. A new `catalog.py` module assembles the catalog purely by
+> introspecting the existing in-code data structures (`CATEGORIES`,
+> `CATEGORY_TO_SLITHER`, `DEFAULT_SEVERITY`, `VYPER_SUPPORTED_CATEGORIES`, and a
+> `BYTECODE_SUPPORTED_CATEGORIES` set asserted against `_analyze_bytecode` so it
+> cannot drift) — it imports no Slither / solc / vyper / network code, so the
+> listing is as fast and dependency-free as `--help` and works offline / in CI
+> / on a fresh checkout with no compiler installed. `--input-type` is no longer
+> argparse-`required` (so the listing can run with no target); the scan-mode
+> "target + input-type required" gate moved into `main()`. Tests in
+> `tests/test_list_checks.py`; README "Listing the detection classes" section
+> documents it.
+>
+> **Why:** Once the roster grew to 10 classes across four input modes with
+> several non-obvious category→detector mappings (`access-control` →
+> `protected-vars` + `events-access`; `overflow` → `divide-before-multiply` +
+> `tautology`; etc.), that knowledge lived only in source-code comments. A
+> bounty hunter pointing omen at a new program scope needs to know, up front,
+> which classes apply to a `.vy` file vs. an unverified on-chain address, and
+> what each omen category actually checks. `--list-checks` surfaces it directly.
