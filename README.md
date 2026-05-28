@@ -80,7 +80,8 @@ omen --contract <path-or-address> \
      --input-type {sol,bytecode,address} \
      --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,all} \
      [--rpc-url URL] \
-     [--format {json,h1md,sarif}]
+     [--format {json,h1md,sarif}] \
+     [--min-confidence {low,medium,high}]
 ```
 
 - `--contract` — a path to a `.sol` source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
@@ -88,6 +89,7 @@ omen --contract <path-or-address> \
 - `--check` — which class to scan for (`all` runs every class). Default: `all`.
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
 - `--format` — `json` (machine-readable, default), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
+- `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 
 ### One example per class
 
@@ -178,6 +180,30 @@ analysis:
 > explicit caveat in each finding: when source is available, source mode (which
 > uses Slither) is more precise. Their purpose is to give a bounty hunter a
 > triage lead on source-unverified on-chain contracts instead of a silent miss.
+
+### Filtering by confidence
+
+Every finding carries a `confidence` of `low`, `medium`, or `high`. Slither
+sets its own confidence on source-mode findings; the bytecode/address
+heuristics for prodigal, greedy, and reentrancy always report at
+`confidence: low`. When you scan a whole program scope these low-confidence
+triage leads can dominate the output, so `--min-confidence` drops findings
+below a chosen threshold:
+
+```bash
+# keep only medium- and high-confidence findings
+omen --contract 0xYourContract --input-type address --rpc-url $RPC \
+     --check all --min-confidence medium
+
+# whole-scope batch, high-confidence only
+omen --batch addresses.txt --input-type address --rpc-url $RPC \
+     --check all --min-confidence high
+```
+
+The default is `--min-confidence low`, which keeps every finding (no change in
+behaviour for existing invocations). The filter runs after analysis, so the
+serialized `finding_count` always matches the findings you see, and it applies
+in every output format and in `--batch` mode.
 
 ### Address mode (read-only, requires --rpc-url)
 

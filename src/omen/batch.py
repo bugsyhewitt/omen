@@ -57,8 +57,14 @@ def run_batch(
     input_type: str,
     check: str,
     rpc_url: str | None = None,
+    min_confidence: str = "low",
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
+
+    *min_confidence* (POST_V01 Rank 8) is forwarded to ``analyze`` for each
+    item, so confidence filtering applies uniformly across the batch — the
+    common case for suppressing low-confidence bytecode-heuristic noise when
+    scanning a whole program scope.
 
     Returns 0 if all items succeeded, 1 if any item raised an exception.
     """
@@ -71,6 +77,7 @@ def run_batch(
                 input_type=input_type,
                 check=check,
                 rpc_url=rpc_url,
+                min_confidence=min_confidence,
             )
         except (InputError, SolcUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)

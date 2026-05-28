@@ -195,7 +195,7 @@ def test_run_batch_item_error_continues_and_returns_1(
 
     good_report = _make_report("good.sol")
 
-    def side_effect(contract, input_type, check, rpc_url):
+    def side_effect(contract, input_type, check, rpc_url, **kwargs):
         if "bad" in contract:
             raise RuntimeError("simulated analysis failure")
         return good_report

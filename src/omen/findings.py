@@ -22,6 +22,27 @@ class Severity(str, Enum):
     INFORMATIONAL = "informational"
 
 
+# Confidence ordering, low -> high. Used by the --min-confidence filter
+# (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
+# omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty
+# hunter scanning a large batch wants to suppress the noisier low-confidence
+# leads, so omen ranks confidence on this scale and filters findings whose
+# rank is below the requested threshold.
+CONFIDENCE_ORDER = ("low", "medium", "high")
+
+
+def confidence_rank(confidence: str) -> int:
+    """Map a confidence string onto its rank (low=0, medium=1, high=2).
+
+    Unknown / unexpected confidence strings are treated as the lowest rank so
+    they are never silently kept by a stricter-than-low threshold.
+    """
+    try:
+        return CONFIDENCE_ORDER.index((confidence or "").strip().lower())
+    except ValueError:
+        return 0
+
+
 # Default severity per MAIAN class. These reflect the worst-case impact of
 # each class: a contract that can be destroyed or leak all its funds is
 # higher severity than one that merely locks funds.
