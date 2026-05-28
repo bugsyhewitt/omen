@@ -29,6 +29,7 @@ from .findings import (
     Finding,
     Severity,
     confidence_rank,
+    fail_on_triggered,
     parse_limit,
     severity_rank,
     sort_key,
@@ -64,6 +65,12 @@ class AnalysisReport:
     # applies this equals len(findings). Defaults to None for in-code callers
     # who build a report directly; to_dict() then reports it as the shown count.
     total_findings: int | None = None
+    # Whether the --fail-on severity gate (POST_V01 Rotation 2, R2.5) tripped.
+    # Computed over the filtered findings *before* the --limit cap, so a display
+    # cap can never hide a finding from the gate. False means "never gate"
+    # (the default) or "gate set but nothing reached the threshold"; the CLI
+    # maps a True here onto a non-zero exit code for CI use.
+    gate_triggered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         shown = len(self.findings)
@@ -81,6 +88,10 @@ class AnalysisReport:
             # cap, so a consumer can tell "10 of 47 shown" from "10 of 10".
             "total_findings": total,
             "truncated": total > shown,
+            # gate_triggered records whether the --fail-on CI gate tripped on
+            # this report's (pre-cap) findings, so a JSON consumer sees the same
+            # signal the process exit code carries.
+            "gate_triggered": self.gate_triggered,
             "findings": [f.to_dict() for f in self.findings],
         }
 
@@ -409,6 +420,7 @@ def analyze(
     min_severity: str = "informational",
     sort: str = "severity",
     limit: int | str | None = None,
+    fail_on: str | None = None,
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
@@ -432,6 +444,14 @@ def analyze(
     so with the default worst-first ordering it keeps the N highest-impact
     leads. Because it does change which findings appear, the report records the
     pre-cap ``total_findings`` and a ``truncated`` flag.
+
+    *fail_on* (POST_V01 Rotation 2, R2.5) is the CI exit-code gate. ``None`` /
+    ``"never"`` (the default) never trips, so omen exits 0 on a clean run as it
+    always has. A severity name (``informational``..``critical``) trips the gate
+    — sets ``report.gate_triggered`` — when at least one finding reaches that
+    severity, which the CLI maps onto a non-zero exit code so a pipeline step
+    fails. The gate is evaluated over the filtered findings *before* the
+    ``--limit`` cap, so a display cap can never hide a finding from the gate.
     """
     limit_n = parse_limit(limit)
     checks = resolve_checks(check)
@@ -447,6 +467,9 @@ def analyze(
     findings = _sort_findings(findings, sort)
     # Record the surviving count before the cap so the report can show "N of M".
     total = len(findings)
+    # Evaluate the CI gate over the full filtered set (pre-cap), so --limit
+    # cannot hide a gate-tripping finding from the exit code.
+    gate = fail_on_triggered(findings, fail_on)
     findings = _limit_findings(findings, limit_n)
 
     return AnalysisReport(
@@ -457,4 +480,5 @@ def analyze(
         checks=checks,
         findings=findings,
         total_findings=total,
+        gate_triggered=gate,
     )

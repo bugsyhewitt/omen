@@ -72,6 +72,41 @@ def sort_key(finding: "Finding") -> tuple[int, int]:
     return (-severity_rank(finding.severity), -confidence_rank(finding.confidence))
 
 
+# Sentinel for "never gate" — the default for --fail-on (POST_V01 Rotation 2,
+# R2.5). When fail_on is "never" omen always exits 0 on a clean run regardless
+# of what it found, preserving the pre-R2.5 exit-code behaviour. Any real
+# severity name turns omen into a CI gate: findings at or above that severity
+# make the run exit non-zero.
+FAIL_ON_NEVER = "never"
+
+
+def fail_on_triggered(
+    findings: "list[Finding]", fail_on: "str | None"
+) -> bool:
+    """Decide whether a --fail-on severity gate trips for *findings*.
+
+    POST_V01 Rotation 2, R2.5 — the CI exit-code gate. ``fail_on`` is either
+    ``"never"`` / ``None`` (the default — never trip, omen exits 0 on a clean
+    run as it always has) or a severity name (``informational``/``low``/
+    ``medium``/``high``/``critical``). The gate trips — returns ``True`` — when
+    at least one finding's severity ranks at or above the threshold.
+
+    This is the standard security-scanner CI pattern (cf. Slither's
+    ``--fail-high``, semgrep/trivy/bandit severity gates): a clean scan exits 0,
+    a scan that surfaces a lead at or above the chosen severity exits non-zero
+    so a pipeline step fails. It is evaluated against the findings that survived
+    the ``--min-severity``/``--min-confidence`` filters but *before* any
+    ``--limit`` cap, so a display cap can never hide a finding from the gate.
+    """
+    if fail_on is None:
+        return False
+    normalized = fail_on.strip().lower()
+    if not normalized or normalized == FAIL_ON_NEVER:
+        return False
+    threshold = severity_rank(normalized)
+    return any(severity_rank(f.severity) >= threshold for f in findings)
+
+
 def parse_limit(limit: "int | str | None") -> int | None:
     """Validate and normalise a ``--limit`` value (POST_V01 Rotation 2, R2.4).
 

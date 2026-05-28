@@ -483,3 +483,54 @@ land.
 > directly with the R2.3 default sort — the cap is only meaningful because the
 > findings are already ordered worst-first, so `--limit N` deterministically
 > yields the N most exploitable leads.
+
+---
+
+### R2.5. `--fail-on` CI exit-code gate
+
+**Rank: 5 (Rotation 2) — zero-dependency CI gate**
+
+> **STATUS: ✅ IMPLEMENTED (R13, 2026-05-28).** `omen --fail-on
+> {never,informational,low,medium,high,critical}` turns the report into a
+> process exit code so omen can fail a CI step. It is the natural fourth stage
+> of the Rotation 2 triage pipeline: the filters (`--min-severity` /
+> `--min-confidence`) decide *which* findings survive, `--sort` decides *what
+> order* they are read in, `--limit` decides *how many* to read, and `--fail-on`
+> decides *whether the run passes*. The default `never` keeps the historical
+> always-exit-`0` behaviour (a clean run exits 0 regardless of what it found, so
+> every existing invocation is unchanged); a severity name makes omen exit `3`
+> when at least one finding reaches that severity — the standard
+> security-scanner CI pattern (Slither's `--fail-high`, the severity gates in
+> semgrep/trivy/bandit). Exit `3` is distinct from the existing `2` (input
+> error) and `1` (analysis crash) so a pipeline can tell "found something" from
+> "broke." Built the same zero-dependency way: a pure `fail_on_triggered()`
+> primitive in `findings.py` (an `any(severity_rank(f) >= threshold)` over the
+> findings, with a `FAIL_ON_NEVER` sentinel) and a `gate_triggered` bool on
+> `AnalysisReport`, computed in `analyze()` over the filtered findings **before**
+> the `--limit` cap (so a display cap can never hide a gate-tripping finding from
+> the exit code) and surfaced in `to_dict()` alongside the exit signal. Wired
+> through `analyze()`, `run_batch()` (the batch gate is the OR across items; a
+> per-item failure's exit `1` still outranks the gate's `3`), and the CLI (which
+> maps `report.gate_triggered` onto exit `3` after printing the report). The gate
+> composes with the filters — a `--min-severity`-suppressed finding does not trip
+> it — and with every output format. Tests in `tests/test_fail_on.py` (gate
+> primitive across the full severity taxonomy incl. exact-threshold/above/below
+> boundaries, empty set, case-insensitivity, mixed-set any(); to_dict
+> bookkeeping; bytecode-mode integration; evaluated-before-limit incl. a
+> monkeypatched cannot-hide-a-finding case; composes-with-min-severity; CLI
+> surface incl. default `never` and unknown-value rejection; in-process `main()`
+> exit codes 0/3; batch OR + error-outranks-gate; subprocess end-to-end exit
+> codes); README "Failing CI on findings" section documents it with the exit-code
+> table and a GitHub Actions blocking-step example. Pure decision/exit-code change
+> — no analysis-path, detector, or dependency changes, so it runs offline / in CI
+> / on a fresh checkout with no compiler installed.
+>
+> **Why:** Rotation 1's Rank 5 added SARIF output, which surfaces findings as
+> GitHub code-scanning annotations — but uploading SARIF does not *fail* a build.
+> The Rotation 2 triage levers all shape *what the analyst reads*; the missing
+> piece for the CI/own-contracts audience (the same audience SARIF targets) is a
+> lever that shapes *whether the pipeline passes*. `--fail-on high` is the move
+> that makes omen a merge-gating check: run it on a PR, and a newly introduced
+> high-severity lead blocks the merge. It completes the
+> filter → sort → cap → gate pipeline and pairs directly with the existing SARIF
+> story — annotate *and* fail, the two halves of a security check in CI.
