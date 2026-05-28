@@ -5,10 +5,12 @@
          [--rpc-url URL] [--format {json,h1md,sarif}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
+         [--sort {severity,none}]
 
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
+         [--sort {severity,none}]
 
 Text in, text out. JSON is the default machine-readable format.
 Batch mode always emits JSONL (one JSON object per contract).
@@ -114,6 +116,18 @@ def build_parser() -> argparse.ArgumentParser:
             "program scope. Composes with --min-confidence."
         ),
     )
+    parser.add_argument(
+        "--sort",
+        default="severity",
+        choices=["severity", "none"],
+        help=(
+            "order findings in the report. 'severity' (default) lists them "
+            "worst-first (highest severity, then highest confidence), so the "
+            "high-impact leads lead every report; 'none' preserves the raw "
+            "detector order. Applies after --min-severity/--min-confidence; "
+            "never changes which findings appear, only their order."
+        ),
+    )
     return parser
 
 
@@ -161,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             rpc_url=args.rpc_url,
             min_confidence=args.min_confidence,
             min_severity=args.min_severity,
+            sort=args.sort,
         )
 
     # --- Single-contract mode ---
@@ -179,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             rpc_url=args.rpc_url,
             min_confidence=args.min_confidence,
             min_severity=args.min_severity,
+            sort=args.sort,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)

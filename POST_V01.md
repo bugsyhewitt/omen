@@ -400,3 +400,43 @@ land.
 > `--min-confidence` already covered the confidence axis; `--min-severity`
 > completes the triage surface on the severity axis, and the two compose for the
 > tightest "high-severity, high-confidence only" first pass.
+
+---
+
+### R2.3. `--sort` severity-first finding ordering
+
+**Rank: 3 (Rotation 2) — zero-dependency triage ordering**
+
+> **STATUS: ✅ IMPLEMENTED (R11, 2026-05-28).** `omen --sort {severity,none}`
+> orders the findings in a report. The default `severity` lists them worst-first
+> — highest severity, then highest confidence as a tie-break — so the
+> high-impact leads sit at the top of every report instead of being scattered
+> through the raw detector-registration order; `none` preserves that raw order.
+> It is the ordering complement to the Rotation 2 filters: where `--min-severity`
+> / `--min-confidence` decide *which* findings survive, `--sort` decides *what
+> order* the survivors are read in. Built the same zero-dependency way: a pure
+> `sort_key()` primitive in `findings.py` (negated `severity_rank` then negated
+> `confidence_rank`, so a plain ascending stable sort is worst-first and ties
+> preserve detector order) and a pure `_sort_findings()` in `analyzer.py` applied
+> *after* the two filters (so the serialized `finding_count` is never affected),
+> wired through `analyze()`, `run_batch()` (uniform across a batch), and the CLI.
+> It composes with both filters and every output format. Tests in
+> `tests/test_sort.py` (sort-key primitive incl. confidence tie-break, pure
+> reorder across the full taxonomy, stability within a severity bucket,
+> no-add/no-drop/no-mutate invariants, bytecode-mode integration, runs-after-
+> filters, CLI surface, batch forwarding, subprocess end-to-end); README
+> "Sorting findings" section documents it. Pure ordering change — no
+> analysis-path, detector, or dependency changes, so it runs offline / in CI /
+> on a fresh checkout with no compiler installed.
+>
+> **Why:** Rotation 2's first two items grew the triage *filter* surface; this
+> closes the triage *presentation* gap. After `--min-severity` narrows a
+> whole-program scan to high/critical leads, the analyst still reads the report
+> top-down, but findings come out in detector-registration order, which
+> interleaves a HIGH suicidal with a MEDIUM greedy with a LOW-confidence
+> reentrancy heuristic. Worst-first ordering — on by default because it is the
+> order every triage pass wants — means the most exploitable lead is line one of
+> every report, JSON, h1md, or SARIF alike. The confidence tie-break is the
+> direct payoff of POST_V01 Rank 1: within one severity bucket, the precise
+> opcode-signature finding (high confidence) outranks the coarse heuristic (low
+> confidence), so the lead a hunter should chase first surfaces first.

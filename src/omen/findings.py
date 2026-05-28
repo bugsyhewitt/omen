@@ -59,6 +59,19 @@ def severity_rank(severity: "Severity | str") -> int:
         return 0
 
 
+def sort_key(finding: "Finding") -> tuple[int, int]:
+    """Severity-then-confidence sort key, worst-and-most-confident first.
+
+    POST_V01 Rotation 2 (Rank 3, ``--sort severity``). Negated so a plain
+    ascending ``sorted()`` puts the highest-severity, highest-confidence finding
+    at the top — the order a bounty hunter reads a whole-program scan in. Python
+    list sorting is stable, so findings that tie on (severity, confidence)
+    preserve their original detector-registration order, keeping the output
+    deterministic.
+    """
+    return (-severity_rank(finding.severity), -confidence_rank(finding.confidence))
+
+
 # Confidence ordering, low -> high. Used by the --min-confidence filter
 # (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
 # omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty

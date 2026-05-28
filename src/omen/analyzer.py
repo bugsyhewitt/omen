@@ -30,6 +30,7 @@ from .findings import (
     Severity,
     confidence_rank,
     severity_rank,
+    sort_key,
 )
 from .solc_env import require_solc
 from .sources import InputError, SourceInput, load_input
@@ -347,6 +348,25 @@ def _filter_by_severity(
     return [f for f in findings if severity_rank(f.severity) >= threshold]
 
 
+def _sort_findings(findings: list[Finding], sort: str) -> list[Finding]:
+    """Order findings for output (POST_V01 Rotation 2, Rank 3).
+
+    ``sort="severity"`` (the default) returns the findings worst-first:
+    highest severity, then highest confidence, with ties preserving the
+    original detector-registration order (Python sort is stable). This puts the
+    high-impact leads at the top of every report — the order a bounty hunter
+    triages a whole-program scan in. ``sort="none"`` preserves the raw
+    detector-registration order for callers who want the unmodified stream.
+    Pure reordering: it never adds, drops, or mutates a finding, so the
+    serialized ``finding_count`` is unaffected.
+    """
+    if sort == "none":
+        return findings
+    if sort == "severity":
+        return sorted(findings, key=sort_key)
+    raise ValueError(f"unknown sort order {sort!r}; choose 'severity' or 'none'")
+
+
 def analyze(
     contract: str,
     input_type: str,
@@ -354,6 +374,7 @@ def analyze(
     rpc_url: str | None = None,
     min_confidence: str = "low",
     min_severity: str = "informational",
+    sort: str = "severity",
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
@@ -365,6 +386,12 @@ def analyze(
     severity level (one of ``informational``/``low``/``medium``/``high``/
     ``critical``); the default ``"informational"`` keeps every finding. Both
     filters compose: a finding must pass both thresholds to be kept.
+
+    *sort* (POST_V01 Rotation 2, Rank 3) orders the surviving findings:
+    ``"severity"`` (the default) returns them worst-first (highest severity,
+    then highest confidence), so the high-impact leads lead the report;
+    ``"none"`` preserves the raw detector order. Sorting runs after filtering,
+    so it never changes which findings appear, only their order.
     """
     checks = resolve_checks(check)
     src = load_input(contract, input_type, rpc_url)
@@ -376,6 +403,7 @@ def analyze(
 
     findings = _filter_by_confidence(findings, min_confidence)
     findings = _filter_by_severity(findings, min_severity)
+    findings = _sort_findings(findings, sort)
 
     return AnalysisReport(
         tool="omen",
