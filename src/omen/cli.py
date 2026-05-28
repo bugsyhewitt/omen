@@ -2,7 +2,7 @@
 
     omen --contract <path-or-address> --input-type {sol,bytecode,address}
          --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
-         [--rpc-url URL] [--format {json,h1md}]
+         [--rpc-url URL] [--format {json,h1md,sarif}]
 
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL]
@@ -71,8 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         default="json",
-        choices=["json", "h1md"],
-        help="output format (default: json)",
+        choices=["json", "h1md", "sarif"],
+        help=(
+            "output format (default: json). sarif emits a SARIF 2.1.0 log for "
+            "GitHub code scanning / VSCode / CI ingestion."
+        ),
     )
     return parser
 

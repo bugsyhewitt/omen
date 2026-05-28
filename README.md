@@ -80,14 +80,14 @@ omen --contract <path-or-address> \
      --input-type {sol,bytecode,address} \
      --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,all} \
      [--rpc-url URL] \
-     [--format {json,h1md}]
+     [--format {json,h1md,sarif}]
 ```
 
 - `--contract` — a path to a `.sol` source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
 - `--input-type` — how to interpret `--contract`.
 - `--check` — which class to scan for (`all` runs every class). Default: `all`.
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
-- `--format` — `json` (machine-readable, default) or `h1md` (a HackerOne-style markdown report).
+- `--format` — `json` (machine-readable, default), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 
 ### One example per class
 
@@ -215,6 +215,35 @@ detection. It never sends a transaction.
     }
   ]
 }
+```
+
+### SARIF output (CI / GitHub code scanning)
+
+`--format sarif` emits a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/)
+log. SARIF is the standard ingested by GitHub Advanced Security (code
+scanning), VSCode's SARIF Viewer, and most CI systems, so omen findings can be
+surfaced as PR annotations and IDE diagnostics alongside other static
+analysers' output.
+
+```bash
+omen --contract tests/fixtures/vulnerable-suicidal.sol \
+     --input-type sol --check suicidal --format sarif > omen.sarif
+```
+
+Each omen detection class maps to one SARIF reporting rule
+(`omen/<category>`), and each finding becomes one result. Severities map to
+SARIF levels (`high`/`critical` → `error`, `medium` → `warning`,
+`low`/`informational` → `note`) and carry a GitHub `security-severity` score;
+source-mode findings include precise `region` line ranges, while bytecode-mode
+findings keep their offending opcode offsets in the result `properties`.
+
+To upload in a GitHub Actions workflow:
+
+```yaml
+- run: omen --contract MyContract.sol --input-type sol --check all --format sarif > omen.sarif
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: omen.sarif
 ```
 
 ---

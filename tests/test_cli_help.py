@@ -42,7 +42,7 @@ def test_help_lists_check_choices():
 
 def test_help_lists_format_choices():
     text = _help_text()
-    assert "json" in text and "h1md" in text
+    assert "json" in text and "h1md" in text and "sarif" in text
 
 
 def test_cli_help_runs_as_subprocess():
