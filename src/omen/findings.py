@@ -36,6 +36,14 @@ DEFAULT_SEVERITY = {
     # medium-severity finding (exploitable only via a phishing/relay flow).
     "access-control": Severity.HIGH,
     "tx-origin": Severity.MEDIUM,
+    # delegatecall and upgrade (R5, POST_V01 Rank 4) are proxy/upgrade-pattern
+    # bugs. Both underlying Slither detectors are HIGH impact: a
+    # controlled-delegatecall lets an attacker run arbitrary code in the
+    # contract's storage context, and an unprotected-upgrade lets anyone seize
+    # the implementation of an upgradeable proxy — an instant critical on any
+    # Immunefi program. Both default to high.
+    "delegatecall": Severity.HIGH,
+    "upgrade": Severity.HIGH,
 }
 
 

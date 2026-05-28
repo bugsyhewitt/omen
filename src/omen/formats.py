@@ -46,6 +46,23 @@ _REMEDIATION = {
         "interacts with can act on the victim's behalf. Use `msg.sender` "
         "instead (and a role/owner check on top of it)."
     ),
+    "delegatecall": (
+        "Never `delegatecall` to an address an attacker can control — the "
+        "callee executes in this contract's storage and balance context and "
+        "can overwrite any state (including the owner) or selfdestruct the "
+        "contract. Restrict the target to a fixed, trusted implementation, and "
+        "avoid `delegatecall` inside loops where `msg.value` is reused across "
+        "iterations."
+    ),
+    "upgrade": (
+        "Protect the upgrade/initialization path of an upgradeable (proxy) "
+        "contract. An implementation whose `initialize`/upgrade function is "
+        "callable by anyone can be hijacked: an attacker initializes it, "
+        "becomes owner, and upgrades the proxy to malicious code. Use "
+        "OpenZeppelin's `Initializable` with `_disableInitializers()` in the "
+        "implementation constructor, and guard `upgradeTo` with an "
+        "owner/role check (`_authorizeUpgrade` in UUPS)."
+    ),
 }
 
 

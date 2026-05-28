@@ -142,6 +142,19 @@ No detector changes.
 
 **Rank: 4 — high severity, proxy/upgrade pattern widely deployed**
 
+> **STATUS: ✅ IMPLEMENTED (R5, 2026-05-28).** Both classes are wired through
+> `CATEGORIES`, `CATEGORY_TO_SLITHER`, `DEFAULT_SEVERITY` (both → high), the CLI
+> `--check` choices, and the `formats.py` remediation table. Fixtures
+> (`vulnerable-delegatecall.sol`, `vulnerable-upgrade.sol`,
+> `clean-delegatecall.sol`) and tests
+> (`tests/test_delegatecall_upgrade_detection.py`,
+> `tests/test_delegatecall_upgrade_wiring.py`) ship with it. **Mapping
+> correction:** the Slither argument literally named `dangerous-delegatecall`
+> does not exist in slither-analyzer 0.11.x; `delegatecall` is mapped onto
+> `controlled-delegatecall` (HIGH — caller-influenceable target/function id)
+> plus `delegatecall-loop` (HIGH). `upgrade` maps onto `unprotected-upgrade`
+> (HIGH) as planned.
+
 **What:** Add two more high-severity Slither detectors as omen classes:
 - `delegatecall`: maps to `dangerous-delegatecall`, `controlled-delegatecall`,
   `delegatecall-loop`.

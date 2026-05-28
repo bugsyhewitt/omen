@@ -20,4 +20,6 @@ CATEGORIES = (
     "reentrancy",
     "access-control",
     "tx-origin",
+    "delegatecall",
+    "upgrade",
 )
