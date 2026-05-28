@@ -67,6 +67,22 @@ _REMEDIATION = {
         "implementation constructor, and guard `upgradeTo` with an "
         "owner/role check (`_authorizeUpgrade` in UUPS)."
     ),
+    "overflow": (
+        "Use Solidity 0.8+ (where arithmetic reverts on overflow/underflow by "
+        "default) or OpenZeppelin SafeMath on older compilers. Avoid dividing "
+        "before multiplying — it truncates and loses precision; multiply first, "
+        "then divide. Remove tautological comparisons (conditions that are "
+        "always true or always false), which usually signal a broken bounds or "
+        "overflow guard."
+    ),
+    "weak-randomness": (
+        "Never derive randomness from on-chain values an actor can observe or "
+        "influence — `block.timestamp`, `blockhash`, `block.number`, and "
+        "`block.difficulty`/`prevrandao` are all predictable or "
+        "miner/validator-manipulable. Use a verifiable randomness source such "
+        "as Chainlink VRF, or a commit-reveal scheme, for any value where the "
+        "outcome has economic significance."
+    ),
 }
 
 

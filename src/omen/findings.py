@@ -65,6 +65,19 @@ DEFAULT_SEVERITY = {
     # Immunefi program. Both default to high.
     "delegatecall": Severity.HIGH,
     "upgrade": Severity.HIGH,
+    # overflow and weak-randomness (R8, POST_V01 Rank 7) are the
+    # medium-severity completeness classes. POST_V01 frames both as MEDIUM:
+    # arithmetic-precision bugs (divide-before-multiply / tautology) and weak
+    # PRNG (blockhash/block.timestamp as randomness) are persistent but rarely
+    # the sole root cause of a critical. These defaults apply to bytecode/
+    # address mode and to any source finding whose Slither impact omen cannot
+    # parse. [Worker decision (R8): in source mode the analyzer maps Slither's
+    # own per-finding impact onto severity, so a weak-prng finding — which
+    # Slither classifies HIGH in 0.11.x — will surface as HIGH at runtime; the
+    # MEDIUM here is the documented default/fallback, consistent with how every
+    # other category's runtime severity already follows Slither's impact.]
+    "overflow": Severity.MEDIUM,
+    "weak-randomness": Severity.MEDIUM,
 }
 
 
