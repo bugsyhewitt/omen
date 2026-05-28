@@ -176,6 +176,18 @@ scope.
 
 **Rank: 5 — CI/CD and GitHub integration**
 
+> **STATUS: ✅ IMPLEMENTED (R6, 2026-05-28).** `--format sarif` emits a SARIF
+> 2.1.0 log document. Wired through the CLI `--format` choices and a new
+> `to_sarif()` in `formats.py` (dispatched by `render`). Each omen category
+> maps to one SARIF reporting rule (`omen/<category>`); each finding becomes
+> one result. Severity maps to SARIF levels (high/critical → error, medium →
+> warning, low/informational → note) and carries a GitHub `security-severity`
+> score; source-mode findings include `region` line ranges parsed from omen's
+> `file#start-end` source mappings, bytecode-mode findings keep opcode offsets
+> in the result `properties`. Tests in `tests/test_formats.py`
+> (`test_sarif_*`); README "SARIF output" section documents the GitHub Actions
+> upload flow. No analysis-path changes — formatter only.
+
 **What:** Add `--format sarif` that emits a SARIF 2.1 JSON file. SARIF is
 the standard consumed by GitHub Advanced Security (code scanning), VSCode, and
 most CI systems. Slither itself can emit SARIF; omen should be able to pipe
@@ -269,6 +281,6 @@ land.
 | R3 | #1 (bytecode heuristics) | Bytecode mode covers all 4+2 classes |
 | R4 | #3 (batch mode) | `--batch` flag, JSONL output |
 | R5 | #4 (delegatecall/upgrade) | Two more high-sev classes |
-| R6 | #5 (SARIF) | SARIF formatter |
+| R6 | #5 (SARIF) ✅ done | SARIF formatter |
 | R7 | #6 (Vyper) | `--input-type vyper` |
 | R8 | #7 + #8 | overflow/PRNG + confidence filter |

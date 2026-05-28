@@ -1,16 +1,20 @@
-"""Output formatting for omen: JSON and H1-flavored markdown.
+"""Output formatting for omen: JSON, H1-flavored markdown, and SARIF.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
-remediation per finding.
+remediation per finding. SARIF (Static Analysis Results Interchange Format)
+2.1.0 is the standard consumed by GitHub Advanced Security code scanning,
+VSCode, and most CI systems — emitting it lets omen findings flow into the
+same tooling ecosystem as Slither's own SARIF output.
 """
 
 from __future__ import annotations
 
 import json
 
+from . import __version__
 from .analyzer import AnalysisReport
-from .findings import Finding
+from .findings import Finding, Severity
 
 
 def to_json(report: AnalysisReport, *, indent: int = 2) -> str:
@@ -137,9 +141,150 @@ def to_h1md(report: AnalysisReport) -> str:
     return "\n".join(lines)
 
 
+_SARIF_SCHEMA = (
+    "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/"
+    "Schemata/sarif-schema-2.1.0.json"
+)
+_SARIF_VERSION = "2.1.0"
+_SARIF_INFO_URI = "https://github.com/bugsyhewitt/omen"
+
+# SARIF defines exactly three result levels (plus "none"). Map omen's H1
+# severity taxonomy onto them; the original severity is preserved verbatim in
+# each rule's `properties.severity` and in the result's `properties` so no
+# information is lost in the projection.
+_SEVERITY_TO_SARIF_LEVEL = {
+    Severity.CRITICAL: "error",
+    Severity.HIGH: "error",
+    Severity.MEDIUM: "warning",
+    Severity.LOW: "note",
+    Severity.INFORMATIONAL: "note",
+}
+
+# A security-severity score (0.0–10.0) drives GitHub code-scanning's
+# Critical/High/Medium/Low buckets via the `security-severity` rule property.
+_SEVERITY_TO_SCORE = {
+    Severity.CRITICAL: "9.5",
+    Severity.HIGH: "8.0",
+    Severity.MEDIUM: "5.0",
+    Severity.LOW: "3.0",
+    Severity.INFORMATIONAL: "0.0",
+}
+
+
+def _sarif_level(severity: Severity) -> str:
+    return _SEVERITY_TO_SARIF_LEVEL.get(severity, "warning")
+
+
+def _sarif_rule_id(category: str) -> str:
+    return f"omen/{category}"
+
+
+def _result_locations(f: Finding) -> list[dict]:
+    """Build SARIF physicalLocation entries from a finding's source mappings.
+
+    omen source mappings look like ``Contract.sol#12-18``. We split the file
+    from the line range so GitHub/VSCode can annotate the exact lines. Bytecode
+    findings carry no source location, so they emit no physicalLocation (their
+    opcode offsets live in the result properties instead).
+    """
+    locations: list[dict] = []
+    for loc in f.evidence.source_mapping:
+        uri = loc
+        region: dict | None = None
+        if "#" in loc:
+            uri, _, span = loc.partition("#")
+            start, _, end = span.partition("-")
+            try:
+                region = {"startLine": int(start)}
+                if end:
+                    region["endLine"] = int(end)
+            except ValueError:
+                region = None
+        physical: dict = {"artifactLocation": {"uri": uri}}
+        if region:
+            physical["region"] = region
+        locations.append({"physicalLocation": physical})
+    return locations
+
+
+def to_sarif(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as a SARIF 2.1.0 log document.
+
+    Produces a single run with one tool driver (omen) whose `rules` array
+    holds one reportingDescriptor per distinct (category) that produced a
+    finding, and a `results` array with one result per finding.
+    """
+    rules_by_id: dict[str, dict] = {}
+    results: list[dict] = []
+
+    for f in report.findings:
+        rule_id = _sarif_rule_id(f.category)
+        if rule_id not in rules_by_id:
+            remediation = _REMEDIATION.get(
+                f.category, "Review and remediate the issue."
+            )
+            rules_by_id[rule_id] = {
+                "id": rule_id,
+                "name": f.category.replace("-", ""),
+                "shortDescription": {"text": f"omen {f.category} finding"},
+                "fullDescription": {"text": remediation},
+                "help": {"text": remediation},
+                "defaultConfiguration": {"level": _sarif_level(f.severity)},
+                "properties": {
+                    "category": f.category,
+                    "severity": f.severity.value,
+                    "security-severity": _SEVERITY_TO_SCORE.get(
+                        f.severity, "5.0"
+                    ),
+                    "tags": ["security", "smart-contract", f.category],
+                },
+            }
+
+        result: dict = {
+            "ruleId": rule_id,
+            "level": _sarif_level(f.severity),
+            "message": {"text": f.description or f.title},
+            "properties": {
+                "category": f.category,
+                "severity": f.severity.value,
+                "confidence": f.confidence,
+                "detector": f.detector,
+            },
+        }
+        if f.contract:
+            result["properties"]["contract"] = f.contract
+        if f.evidence.opcodes:
+            result["properties"]["opcodes"] = f.evidence.opcodes
+        locations = _result_locations(f)
+        if locations:
+            result["locations"] = locations
+        results.append(result)
+
+    sarif_doc = {
+        "$schema": _SARIF_SCHEMA,
+        "version": _SARIF_VERSION,
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "omen",
+                        "version": __version__,
+                        "informationUri": _SARIF_INFO_URI,
+                        "rules": list(rules_by_id.values()),
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+    return json.dumps(sarif_doc, indent=indent, sort_keys=False)
+
+
 def render(report: AnalysisReport, fmt: str) -> str:
     if fmt == "json":
         return to_json(report)
     if fmt == "h1md":
         return to_h1md(report)
+    if fmt == "sarif":
+        return to_sarif(report)
     raise ValueError(f"unknown output format: {fmt}")
