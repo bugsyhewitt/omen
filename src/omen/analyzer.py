@@ -29,6 +29,7 @@ from .findings import (
     Finding,
     Severity,
     confidence_rank,
+    parse_limit,
     severity_rank,
     sort_key,
 )
@@ -58,15 +59,28 @@ class AnalysisReport:
     origin: str
     checks: list[str]
     findings: list[Finding] = field(default_factory=list)
+    # Number of findings that survived filtering/sorting *before* a --limit cap
+    # (POST_V01 Rotation 2, R2.4) truncated them for display. When no limit
+    # applies this equals len(findings). Defaults to None for in-code callers
+    # who build a report directly; to_dict() then reports it as the shown count.
+    total_findings: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        shown = len(self.findings)
+        total = self.total_findings if self.total_findings is not None else shown
         return {
             "tool": self.tool,
             "version": self.version,
             "input_type": self.input_type,
             "origin": self.origin,
             "checks": self.checks,
-            "finding_count": len(self.findings),
+            # finding_count is the number of findings shown in this report.
+            "finding_count": shown,
+            # total_findings is how many survived filtering before --limit
+            # truncated them; truncated flags whether any were dropped by the
+            # cap, so a consumer can tell "10 of 47 shown" from "10 of 10".
+            "total_findings": total,
+            "truncated": total > shown,
             "findings": [f.to_dict() for f in self.findings],
         }
 
@@ -367,6 +381,25 @@ def _sort_findings(findings: list[Finding], sort: str) -> list[Finding]:
     raise ValueError(f"unknown sort order {sort!r}; choose 'severity' or 'none'")
 
 
+def _limit_findings(
+    findings: list[Finding], limit: int | None
+) -> list[Finding]:
+    """Cap the report to the first *limit* findings (POST_V01 Rotation 2, R2.4).
+
+    ``limit=None`` (the default) keeps every finding. A positive ``limit``
+    returns at most that many findings from the front of the list. This runs
+    *after* ``_sort_findings``, so with the default worst-first ordering the
+    cap keeps the N highest-impact leads — the "just show me the top N" triage
+    move on a whole-program scan that still emits dozens of findings after the
+    severity/confidence filters. Unlike the filters, this does change which
+    findings appear, so the report records the pre-cap ``total_findings`` and a
+    ``truncated`` flag for honest "N of M shown" reporting.
+    """
+    if limit is None:
+        return findings
+    return findings[:limit]
+
+
 def analyze(
     contract: str,
     input_type: str,
@@ -375,6 +408,7 @@ def analyze(
     min_confidence: str = "low",
     min_severity: str = "informational",
     sort: str = "severity",
+    limit: int | str | None = None,
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
@@ -392,7 +426,14 @@ def analyze(
     then highest confidence), so the high-impact leads lead the report;
     ``"none"`` preserves the raw detector order. Sorting runs after filtering,
     so it never changes which findings appear, only their order.
+
+    *limit* (POST_V01 Rotation 2, R2.4) caps the report to at most that many
+    findings; ``None`` (the default) keeps all. The cap runs *after* sorting,
+    so with the default worst-first ordering it keeps the N highest-impact
+    leads. Because it does change which findings appear, the report records the
+    pre-cap ``total_findings`` and a ``truncated`` flag.
     """
+    limit_n = parse_limit(limit)
     checks = resolve_checks(check)
     src = load_input(contract, input_type, rpc_url)
 
@@ -404,6 +445,9 @@ def analyze(
     findings = _filter_by_confidence(findings, min_confidence)
     findings = _filter_by_severity(findings, min_severity)
     findings = _sort_findings(findings, sort)
+    # Record the surviving count before the cap so the report can show "N of M".
+    total = len(findings)
+    findings = _limit_findings(findings, limit_n)
 
     return AnalysisReport(
         tool="omen",
@@ -412,4 +456,5 @@ def analyze(
         origin=src.origin,
         checks=checks,
         findings=findings,
+        total_findings=total,
     )

@@ -5,12 +5,12 @@
          [--rpc-url URL] [--format {json,h1md,sarif}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
-         [--sort {severity,none}]
+         [--sort {severity,none}] [--limit N]
 
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
-         [--sort {severity,none}]
+         [--sort {severity,none}] [--limit N]
 
 Text in, text out. JSON is the default machine-readable format.
 Batch mode always emits JSONL (one JSON object per contract).
@@ -22,6 +22,25 @@ import argparse
 import sys
 
 from . import CATEGORIES, __version__
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for --limit: a positive integer (>= 1).
+
+    Rejects 0 and negatives — a zero/negative cap would silently hide every
+    finding, which is almost always a mistake; omen errors instead.
+    """
+    try:
+        n = int(value, 10)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--limit must be a positive integer, got {value!r}"
+        )
+    if n <= 0:
+        raise argparse.ArgumentTypeError(
+            f"--limit must be a positive integer (>= 1), got {n}"
+        )
+    return n
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -128,6 +147,19 @@ def build_parser() -> argparse.ArgumentParser:
             "never changes which findings appear, only their order."
         ),
     )
+    parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "cap the report to at most N findings (default: no limit). Applied "
+            "after --sort, so with the default worst-first ordering it keeps "
+            "the N highest-impact leads — the 'show me the top N' triage move "
+            "on a large scan. The report records the pre-cap total_findings and "
+            "a truncated flag. In --batch mode the cap is per-contract."
+        ),
+    )
     return parser
 
 
@@ -176,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             min_confidence=args.min_confidence,
             min_severity=args.min_severity,
             sort=args.sort,
+            limit=args.limit,
         )
 
     # --- Single-contract mode ---
@@ -195,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             min_confidence=args.min_confidence,
             min_severity=args.min_severity,
             sort=args.sort,
+            limit=args.limit,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)

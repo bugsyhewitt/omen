@@ -135,7 +135,14 @@ def to_h1md(report: AnalysisReport) -> str:
     lines.append(f"- **Tool:** {report.tool} v{report.version}")
     lines.append(f"- **Input type:** {report.input_type}")
     lines.append(f"- **Checks run:** {', '.join(report.checks)}")
-    lines.append(f"- **Findings:** {len(report.findings)}")
+    shown = len(report.findings)
+    total = report.total_findings if report.total_findings is not None else shown
+    if total > shown:
+        # --limit (POST_V01 Rotation 2, R2.4) truncated the report; show the
+        # honest "top N of M" so the reader knows leads were capped, not absent.
+        lines.append(f"- **Findings:** {shown} of {total} (top {shown} shown; --limit)")
+    else:
+        lines.append(f"- **Findings:** {shown}")
     lines.append("")
 
     if not report.findings:

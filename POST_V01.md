@@ -440,3 +440,46 @@ land.
 > direct payoff of POST_V01 Rank 1: within one severity bucket, the precise
 > opcode-signature finding (high confidence) outranks the coarse heuristic (low
 > confidence), so the lead a hunter should chase first surfaces first.
+
+---
+
+### R2.4. `--limit` top-N finding cap
+
+**Rank: 4 (Rotation 2) — zero-dependency triage volume control**
+
+> **STATUS: ✅ IMPLEMENTED (R12, 2026-05-28).** `omen --limit N` caps a report to
+> at most N findings. It is the third stage of the Rotation 2 triage pipeline:
+> the filters (`--min-severity` / `--min-confidence`) decide *which* findings
+> survive, `--sort` decides *what order* the survivors are read in, and `--limit`
+> decides *how many* to read. The cap runs *after* `--sort`, so with the default
+> worst-first ordering it keeps the N highest-impact leads — the "just show me
+> the top N" move on a whole-program scan that still emits dozens of findings
+> after the filters. Built the same zero-dependency way: a `parse_limit()`
+> validation primitive in `findings.py` (positive-int only; `None`/empty = no
+> limit; `0`/negatives rejected because a zero cap would silently hide every
+> lead) and a pure `_limit_findings()` in `analyzer.py` applied after the two
+> filters and the sort, wired through `analyze()`, `run_batch()` (the cap is
+> per-contract — each JSONL line shows at most N findings, not a cap on the
+> number of contracts), and the CLI (a `_positive_int` argparse type).
+> **Honesty note:** unlike the filters and the sort, the cap *does* change which
+> findings appear, so `AnalysisReport` now carries a pre-cap `total_findings`
+> and `to_dict()` emits `total_findings` and a `truncated` boolean alongside the
+> shown `finding_count` (so a consumer can tell "10 of 47 shown" from "10 of
+> 10"); the `h1md` formatter renders `Findings: 10 of 47 (top 10 shown;
+> --limit)` when truncated. Tests in `tests/test_limit.py` (parse_limit
+> primitive incl. zero/negative/bool/string rejection, pure cap step, to_dict
+> total/truncated bookkeeping, runs-after-sort, composes-with-filters,
+> bytecode-mode integration, string-limit acceptance, CLI surface incl.
+> validation rejections, batch per-contract forwarding, h1md truncation line,
+> subprocess end-to-end); README "Limiting findings" section documents it. Pure
+> ordering/slice change — no analysis-path, detector, or dependency changes, so
+> it runs offline / in CI / on a fresh checkout with no compiler installed.
+>
+> **Why:** Rotation 2's first three items built the triage filter and ordering
+> surface, but on a large program scope even a `--min-severity high` scan can
+> leave a long list. The natural next zero-dependency triage-UX lever is volume:
+> after worst-first sorting, an analyst's first pass is "chase the top handful of
+> leads." `--limit` completes the filter → sort → cap pipeline, and pairs
+> directly with the R2.3 default sort — the cap is only meaningful because the
+> findings are already ordered worst-first, so `--limit N` deterministically
+> yields the N most exploitable leads.
