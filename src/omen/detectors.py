@@ -53,6 +53,20 @@ CATEGORY_TO_SLITHER: dict[str, list[str]] = {
     # remapped here to avoid duplicate findings.)]
     "access-control": ["protected-vars", "events-access"],
     "tx-origin": ["tx-origin"],
+    # [Worker decision (R5, POST_V01 Rank 4): the roadmap proposed mapping the
+    # `delegatecall` category onto a Slither detector named
+    # "dangerous-delegatecall". No such ARGUMENT exists in slither-analyzer
+    # 0.11.x — the canonical detector for an attacker-controlled delegatecall
+    # destination is "controlled-delegatecall" (HIGH impact). It is paired with
+    # "delegatecall-loop" (HIGH impact: a delegatecall inside a loop that can
+    # multiply msg.value usage). The phantom "dangerous-delegatecall" name is
+    # intentionally omitted rather than left in as a silent no-op, mirroring the
+    # R2 access-control mapping correction. The `upgrade` category maps onto
+    # "unprotected-upgrade" (HIGH/HIGH) — an initializable proxy implementation
+    # whose initializer can be front-run/called by anyone, the canonical
+    # instant-critical on UUPS/Transparent proxy bounty scope.]
+    "delegatecall": ["controlled-delegatecall", "delegatecall-loop"],
+    "upgrade": ["unprotected-upgrade"],
 }
 
 

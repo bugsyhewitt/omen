@@ -28,6 +28,22 @@ Plus the two highest-loss authorization classes (added in R2):
 | **access-control** | Privileged state/functions missing or misusing access restrictions — OWASP's #1 loss category (Smart Contract Top 10 2025/2026) | Slither `protected-vars`, `events-access` |
 | **tx-origin** | `tx.origin` used for authentication, exploitable via a phishing-relay attack | Slither `tx-origin` |
 
+Plus the proxy/upgrade high-severity cluster (added in R5):
+
+| Class | What it means | omen detects via |
+|---|---|---|
+| **delegatecall** | `delegatecall` to an attacker-influenceable target or function id — the callee runs in this contract's storage/balance context and can overwrite state or destroy the contract (the second Parity multisig freeze) | Slither `controlled-delegatecall`, `delegatecall-loop` |
+| **upgrade** | An upgradeable (proxy) implementation whose initialize/upgrade path is unprotected — anyone can initialize it, become owner, and seize the proxy (the Wormhole uninitialized-implementation class) | Slither `unprotected-upgrade` |
+
+> **delegatecall/upgrade note.** Both are **source-mode** checks. Slither's
+> `controlled-delegatecall` fires when the delegatecall target *or* its function
+> id is influenced by input or mutable state; a `delegatecall` to a
+> compile-time-`constant` library with a hardcoded selector is considered safe.
+> `unprotected-upgrade` flags an `Initializable` implementation that omits
+> `_disableInitializers()` in its constructor. (The roadmap's proposed
+> `dangerous-delegatecall` Slither argument does not exist in slither-analyzer
+> 0.11.x; the canonical detector is `controlled-delegatecall`.)
+
 > **access-control note.** Slither's high-confidence `protected-vars` detector keys off the `@custom:security write-protection="onlyOwner()"` NatSpec annotation on the state variable that gates access: it flags any function that writes that variable *without* going through the named guard. Annotate the variables you intend to protect and omen will catch the missing guard. `events-access` complements it by flagging admin/ownership changes that emit no event.
 
 ---
@@ -62,7 +78,7 @@ need **no** `solc`.
 ```
 omen --contract <path-or-address> \
      --input-type {sol,bytecode,address} \
-     --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all} \
+     --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,all} \
      [--rpc-url URL] \
      [--format {json,h1md}]
 ```
@@ -117,9 +133,24 @@ omen --contract tests/fixtures/vulnerable-tx-origin.sol \
      --input-type sol --check tx-origin --format json
 ```
 
-> access-control and tx-origin are **source-mode** checks (they need Slither's
-> static analysis); they are not detectable from raw bytecode alone, so they
-> produce no findings in `--input-type bytecode`/`address` mode.
+**delegatecall** (source mode):
+
+```bash
+omen --contract tests/fixtures/vulnerable-delegatecall.sol \
+     --input-type sol --check delegatecall --format h1md
+```
+
+**upgrade** (source mode):
+
+```bash
+omen --contract tests/fixtures/vulnerable-upgrade.sol \
+     --input-type sol --check upgrade --format json
+```
+
+> access-control, tx-origin, delegatecall, and upgrade are **source-mode**
+> checks (they need Slither's static analysis); they are not detectable from raw
+> bytecode alone, so they produce no findings in `--input-type bytecode`/
+> `address` mode.
 
 ### Bytecode mode (no solc)
 
@@ -191,8 +222,9 @@ detection. It never sends a transaction.
 ## Scope
 
 In scope: the classes above (the four MAIAN classes, reentrancy, access-control,
-and tx-origin), on Ethereum, from Solidity source / EVM bytecode / an on-chain
-address (read-only). access-control and tx-origin are source-mode only.
+tx-origin, delegatecall, and upgrade), on Ethereum, from Solidity source / EVM
+bytecode / an on-chain address (read-only). access-control, tx-origin,
+delegatecall, and upgrade are source-mode only.
 
 Not in scope: a custom symbolic-execution engine (omen uses Slither's), non-
 Ethereum chains, DeFi-specific patterns (oracle manipulation, flash loans,
