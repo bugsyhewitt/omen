@@ -22,4 +22,6 @@ CATEGORIES = (
     "tx-origin",
     "delegatecall",
     "upgrade",
+    "overflow",
+    "weak-randomness",
 )

@@ -44,6 +44,24 @@ Plus the proxy/upgrade high-severity cluster (added in R5):
 > `dangerous-delegatecall` Slither argument does not exist in slither-analyzer
 > 0.11.x; the canonical detector is `controlled-delegatecall`.)
 
+Plus the medium-severity completeness cluster (added in R8):
+
+| Class | What it means | omen detects via |
+|---|---|---|
+| **overflow** | Unsafe arithmetic — most often an integer division performed *before* a multiplication, which truncates and silently loses precision; also tautological comparisons that signal a broken bounds/overflow guard. Solidity 0.8+ reverts on raw overflow by default, so pre-0.8 contracts are the primary target | Slither `divide-before-multiply`, `tautology` |
+| **weak-randomness** | On-chain randomness derived from predictable, miner/validator-manipulable values (`block.timestamp`, `blockhash`, `block.number`, `prevrandao`) — an attacker can force a favorable outcome | Slither `weak-prng` |
+
+> **overflow/weak-randomness note.** Both are **source-mode** checks. They are
+> medium-severity completeness classes: useful on older or non-financial
+> contracts where they may be the root cause, but rarely a standalone critical.
+> (The roadmap's proposed `integer-overflow` Slither argument does not exist in
+> slither-analyzer 0.11.x — Slither ships no standalone overflow detector since
+> 0.8 made raw overflow a revert — so omen maps `overflow` onto the real
+> arithmetic-precision detectors `divide-before-multiply` and `tautology`.
+> `weak-randomness` maps onto `weak-prng`, which Slither classifies HIGH impact,
+> so a weak-PRNG finding surfaces at HIGH severity at runtime even though the
+> class default is MEDIUM.)
+
 > **access-control note.** Slither's high-confidence `protected-vars` detector keys off the `@custom:security write-protection="onlyOwner()"` NatSpec annotation on the state variable that gates access: it flags any function that writes that variable *without* going through the named guard. Annotate the variables you intend to protect and omen will catch the missing guard. `events-access` complements it by flagging admin/ownership changes that emit no event.
 
 ---
@@ -85,7 +103,7 @@ need **no** compiler at all.
 ```
 omen --contract <path-or-address> \
      --input-type {sol,vyper,bytecode,address} \
-     --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,all} \
+     --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,overflow,weak-randomness,all} \
      [--rpc-url URL] \
      [--format {json,h1md,sarif}] \
      [--min-confidence {low,medium,high}]
@@ -156,10 +174,24 @@ omen --contract tests/fixtures/vulnerable-upgrade.sol \
      --input-type sol --check upgrade --format json
 ```
 
-> access-control, tx-origin, delegatecall, and upgrade are **source-mode**
-> checks (they need Slither's static analysis); they are not detectable from raw
-> bytecode alone, so they produce no findings in `--input-type bytecode`/
-> `address` mode.
+**overflow** (source mode):
+
+```bash
+omen --contract tests/fixtures/vulnerable-overflow.sol \
+     --input-type sol --check overflow --format json
+```
+
+**weak-randomness** (source mode):
+
+```bash
+omen --contract tests/fixtures/vulnerable-weak-randomness.sol \
+     --input-type sol --check weak-randomness --format h1md
+```
+
+> access-control, tx-origin, delegatecall, upgrade, overflow, and
+> weak-randomness are **source-mode** checks (they need Slither's static
+> analysis); they are not detectable from raw bytecode alone, so they produce no
+> findings in `--input-type bytecode`/`address` mode.
 
 ### Bytecode mode (no solc)
 

@@ -250,6 +250,27 @@ Vyper.
 
 **Rank: 7 — medium-severity completeness**
 
+> **STATUS: ✅ IMPLEMENTED (R8, 2026-05-28).** Both classes are wired through
+> `CATEGORIES`, `CATEGORY_TO_SLITHER`, `DEFAULT_SEVERITY` (both → medium), the
+> CLI `--check` choices (auto-derived from `CATEGORIES`), and the `formats.py`
+> remediation table. Fixtures (`vulnerable-overflow.sol`,
+> `vulnerable-weak-randomness.sol`, `clean-overflow.sol`) and tests
+> (`tests/test_overflow_randomness_detection.py`,
+> `tests/test_overflow_randomness_wiring.py`) ship with it. **Mapping
+> correction:** the Slither argument literally named `integer-overflow` does
+> not exist in slither-analyzer 0.11.x — Slither ships no standalone overflow
+> detector because Solidity 0.8+ makes raw overflow a revert by default. The
+> `overflow` category is therefore mapped onto the real arithmetic-precision
+> detectors `divide-before-multiply` (MEDIUM — division before multiplication
+> truncating precision) plus `tautology` (MEDIUM/HIGH-confidence — a comparison
+> that is always true/false, the symptom of a broken bounds/overflow guard).
+> `weak-randomness` maps onto `weak-prng` as planned. **Severity note:** both
+> default to MEDIUM per this roadmap's "medium-severity completeness" framing;
+> in source mode the analyzer follows Slither's own per-finding impact, so a
+> `weak-prng` finding (which Slither classifies HIGH) surfaces at HIGH at
+> runtime — the MEDIUM is the documented default/fallback. Both are source-mode
+> only (Slither static analysis); they are not in the Vyper-supported subset.
+
 **What:** Add:
 - `overflow`: Slither `integer-overflow` (medium).
 - `weak-randomness`: Slither `weak-prng` (medium).

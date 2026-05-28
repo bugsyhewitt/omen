@@ -67,6 +67,26 @@ CATEGORY_TO_SLITHER: dict[str, list[str]] = {
     # instant-critical on UUPS/Transparent proxy bounty scope.]
     "delegatecall": ["controlled-delegatecall", "delegatecall-loop"],
     "upgrade": ["unprotected-upgrade"],
+    # [Worker decision (R8, POST_V01 Rank 7): the roadmap proposed mapping the
+    # `overflow` category onto a Slither detector literally named
+    # "integer-overflow". No such ARGUMENT exists in slither-analyzer 0.11.x —
+    # Slither does not ship a standalone "integer-overflow" detector (post-0.8
+    # Solidity makes arithmetic overflow a revert by default, so a dedicated
+    # overflow detector is low-value and was never added under that name). The
+    # canonical Slither detectors that surface the pre-0.8 unchecked-arithmetic
+    # risk class are:
+    #   - divide-before-multiply: integer division performed before a
+    #     multiplication, which truncates and loses precision (the most common
+    #     real arithmetic-precision bug Slither flags). MEDIUM impact.
+    #   - tautology: a comparison that is always true/false, frequently the
+    #     symptom of a broken bounds/overflow guard. MEDIUM impact.
+    # The phantom "integer-overflow" name is intentionally omitted rather than
+    # left in as a silent no-op, mirroring the R2/R5 mapping corrections. The
+    # `weak-randomness` category maps onto "weak-prng" (block.timestamp /
+    # blockhash / block.number used as a randomness source) exactly as the
+    # roadmap named it — that ARGUMENT does exist in slither 0.11.x.]
+    "overflow": ["divide-before-multiply", "tautology"],
+    "weak-randomness": ["weak-prng"],
 }
 
 
