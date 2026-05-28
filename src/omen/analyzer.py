@@ -22,7 +22,13 @@ from .detectors import (
     scan_reentrancy,
     slither_detector_classes,
 )
-from .findings import DEFAULT_SEVERITY, Evidence, Finding, Severity
+from .findings import (
+    DEFAULT_SEVERITY,
+    Evidence,
+    Finding,
+    Severity,
+    confidence_rank,
+)
 from .solc_env import require_solc
 from .sources import SourceInput, load_input
 
@@ -271,13 +277,36 @@ def _analyze_bytecode(src: SourceInput, checks: list[str]) -> list[Finding]:
     return findings
 
 
+def _filter_by_confidence(
+    findings: list[Finding], min_confidence: str
+) -> list[Finding]:
+    """Drop findings whose confidence ranks below *min_confidence*.
+
+    POST_V01 Rank 8. ``min_confidence="low"`` (the default) keeps everything;
+    ``"medium"`` drops low-confidence findings; ``"high"`` keeps only
+    high-confidence findings. This matters most for bytecode/address mode,
+    where the prodigal/greedy/reentrancy heuristics (Rank 1) emit at
+    confidence ``low`` and dominate large batch scans with triage noise.
+    """
+    threshold = confidence_rank(min_confidence)
+    if threshold <= 0:
+        return findings  # "low" or unknown -> keep all
+    return [f for f in findings if confidence_rank(f.confidence) >= threshold]
+
+
 def analyze(
     contract: str,
     input_type: str,
     check: str,
     rpc_url: str | None = None,
+    min_confidence: str = "low",
 ) -> AnalysisReport:
-    """Top-level entry point: load input, run checks, return a report."""
+    """Top-level entry point: load input, run checks, return a report.
+
+    *min_confidence* (POST_V01 Rank 8) suppresses findings below the given
+    confidence level (one of ``low``/``medium``/``high``); the default
+    ``"low"`` keeps every finding.
+    """
     checks = resolve_checks(check)
     src = load_input(contract, input_type, rpc_url)
 
@@ -285,6 +314,8 @@ def analyze(
         findings = _analyze_source(src, checks)
     else:  # bytecode or address (both reduce to bytecode analysis)
         findings = _analyze_bytecode(src, checks)
+
+    findings = _filter_by_confidence(findings, min_confidence)
 
     return AnalysisReport(
         tool="omen",

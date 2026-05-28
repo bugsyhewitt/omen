@@ -3,9 +3,10 @@
     omen --contract <path-or-address> --input-type {sol,bytecode,address}
          --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
          [--rpc-url URL] [--format {json,h1md,sarif}]
+         [--min-confidence {low,medium,high}]
 
     omen --batch <dir-or-list-file> --input-type {sol,address}
-         --check {...} [--rpc-url URL]
+         --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
 
 Text in, text out. JSON is the default machine-readable format.
 Batch mode always emits JSONL (one JSON object per contract).
@@ -77,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
             "GitHub code scanning / VSCode / CI ingestion."
         ),
     )
+    parser.add_argument(
+        "--min-confidence",
+        default="low",
+        choices=["low", "medium", "high"],
+        help=(
+            "suppress findings below this confidence level (default: low, i.e. "
+            "keep all). Use 'medium' or 'high' to filter out the "
+            "low-confidence bytecode/address heuristics when triaging large "
+            "scans."
+        ),
+    )
     return parser
 
 
@@ -97,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             input_type=args.input_type,
             check=args.check,
             rpc_url=args.rpc_url,
+            min_confidence=args.min_confidence,
         )
 
     # --- Single-contract mode ---
@@ -112,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
             input_type=args.input_type,
             check=args.check,
             rpc_url=args.rpc_url,
+            min_confidence=args.min_confidence,
         )
     except (InputError, SolcUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)
