@@ -29,6 +29,7 @@ from .findings import (
     Finding,
     Severity,
     confidence_rank,
+    severity_rank,
 )
 from .solc_env import require_solc
 from .sources import InputError, SourceInput, load_input
@@ -328,18 +329,42 @@ def _filter_by_confidence(
     return [f for f in findings if confidence_rank(f.confidence) >= threshold]
 
 
+def _filter_by_severity(
+    findings: list[Finding], min_severity: str
+) -> list[Finding]:
+    """Drop findings whose severity ranks below *min_severity*.
+
+    POST_V01 Rotation 2 (severity sibling of the Rank 8 confidence filter).
+    ``min_severity="informational"`` (the default) keeps everything; ``"high"``
+    keeps only high/critical findings, etc. This is the triage lever for a
+    bounty hunter pointing omen at a whole program scope: with ten detection
+    classes spanning informational..critical, surfacing the high-impact leads
+    first is the common first pass before drilling into the noise.
+    """
+    threshold = severity_rank(min_severity)
+    if threshold <= 0:
+        return findings  # "informational" or unknown -> keep all
+    return [f for f in findings if severity_rank(f.severity) >= threshold]
+
+
 def analyze(
     contract: str,
     input_type: str,
     check: str,
     rpc_url: str | None = None,
     min_confidence: str = "low",
+    min_severity: str = "informational",
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
     *min_confidence* (POST_V01 Rank 8) suppresses findings below the given
     confidence level (one of ``low``/``medium``/``high``); the default
     ``"low"`` keeps every finding.
+
+    *min_severity* (POST_V01 Rotation 2) suppresses findings below the given
+    severity level (one of ``informational``/``low``/``medium``/``high``/
+    ``critical``); the default ``"informational"`` keeps every finding. Both
+    filters compose: a finding must pass both thresholds to be kept.
     """
     checks = resolve_checks(check)
     src = load_input(contract, input_type, rpc_url)
@@ -350,6 +375,7 @@ def analyze(
         findings = _analyze_bytecode(src, checks)
 
     findings = _filter_by_confidence(findings, min_confidence)
+    findings = _filter_by_severity(findings, min_severity)
 
     return AnalysisReport(
         tool="omen",

@@ -369,3 +369,34 @@ land.
 > bounty hunter pointing omen at a new program scope needs to know, up front,
 > which classes apply to a `.vy` file vs. an unverified on-chain address, and
 > what each omen category actually checks. `--list-checks` surfaces it directly.
+
+---
+
+### R2.2. `--min-severity` triage filter
+
+**Rank: 2 (Rotation 2) — zero-dependency triage lever**
+
+> **STATUS: ✅ IMPLEMENTED (R10, 2026-05-28).** `omen --min-severity
+> {informational,low,medium,high,critical}` suppresses findings whose severity
+> ranks below the threshold; the default `informational` keeps every finding
+> (no behaviour change for existing invocations). It is the severity-axis
+> sibling of the Rank 8 `--min-confidence` filter and is built the same way: a
+> `SEVERITY_ORDER` tuple + `severity_rank()` primitive in `findings.py`, a pure
+> `_filter_by_severity()` in `analyzer.py` applied after analysis (so the
+> serialized `finding_count` always matches what is shown), wired through
+> `analyze()`, `run_batch()` (uniform across a batch), and the CLI. The two
+> filters **compose** — a finding must clear both the severity and the
+> confidence threshold to survive. Tests in `tests/test_min_severity.py` (rank
+> primitive, pure filter across the full taxonomy, bytecode-mode integration,
+> compose-with-confidence, CLI surface, batch forwarding, subprocess
+> end-to-end); README "Filtering by severity" section documents it. Pure
+> filter change — no analysis-path, detector, or dependency changes, so it runs
+> offline / in CI / on a fresh checkout with no compiler installed.
+>
+> **Why:** Once the roster grew to ten classes spanning informational..critical,
+> a scan of a whole program scope produces a long, severity-mixed finding list.
+> The first triage pass a bounty hunter makes is "show me the high-impact leads
+> first" — the severity analogue of suppressing low-confidence heuristic noise.
+> `--min-confidence` already covered the confidence axis; `--min-severity`
+> completes the triage surface on the severity axis, and the two compose for the
+> tightest "high-severity, high-confidence only" first pass.

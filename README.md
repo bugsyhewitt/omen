@@ -106,7 +106,8 @@ omen --contract <path-or-address> \
      --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,overflow,weak-randomness,all} \
      [--rpc-url URL] \
      [--format {json,h1md,sarif}] \
-     [--min-confidence {low,medium,high}]
+     [--min-confidence {low,medium,high}] \
+     [--min-severity {informational,low,medium,high,critical}]
 
 omen --list-checks [--format {text,json}]
 ```
@@ -117,6 +118,7 @@ omen --list-checks [--format {text,json}]
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
 - `--format` — `json` (machine-readable, default), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
+- `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Listing the detection classes
@@ -278,6 +280,29 @@ The default is `--min-confidence low`, which keeps every finding (no change in
 behaviour for existing invocations). The filter runs after analysis, so the
 serialized `finding_count` always matches the findings you see, and it applies
 in every output format and in `--batch` mode.
+
+### Filtering by severity
+
+Every finding also carries a `severity` of `informational`, `low`, `medium`,
+`high`, or `critical`. With ten detection classes spanning that whole range,
+the first pass over a new program scope is usually "show me the high-impact
+leads first." `--min-severity` drops findings below a chosen threshold:
+
+```bash
+# only high- and critical-severity findings
+omen --contract Token.sol --input-type sol \
+     --check all --min-severity high
+
+# whole-scope batch, high severity AND high confidence — the tightest triage
+omen --batch addresses.txt --input-type address --rpc-url $RPC \
+     --check all --min-severity high --min-confidence high
+```
+
+The default is `--min-severity informational`, which keeps every finding. The
+two filters **compose**: a finding must clear both the severity and the
+confidence threshold to survive. Like the confidence filter, severity filtering
+runs after analysis (so `finding_count` always matches what you see) and
+applies in every output format and in `--batch` mode.
 
 ### Address mode (read-only, requires --rpc-url)
 

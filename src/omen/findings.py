@@ -22,6 +22,43 @@ class Severity(str, Enum):
     INFORMATIONAL = "informational"
 
 
+# Severity ordering, low -> high. Used by the --min-severity filter (POST_V01
+# Rotation 2): a bounty hunter triaging a large scan across omen's ten
+# detection classes — which span informational..critical — wants to surface
+# only the high-impact leads first. This mirrors the --min-confidence filter
+# but on the severity axis. The order is the inverse of how the enum is
+# declared (declared worst-first for readability; ranked best-first here so a
+# higher rank means a worse finding, consistent with confidence_rank).
+SEVERITY_ORDER = (
+    Severity.INFORMATIONAL,
+    Severity.LOW,
+    Severity.MEDIUM,
+    Severity.HIGH,
+    Severity.CRITICAL,
+)
+
+
+def severity_rank(severity: "Severity | str") -> int:
+    """Map a Severity (or its string value) onto its rank.
+
+    informational=0, low=1, medium=2, high=3, critical=4 — higher is worse, so
+    a ``--min-severity`` threshold keeps findings whose rank is >= the
+    threshold's rank. Unknown / unexpected severities are treated as the lowest
+    rank (informational) so a stricter-than-informational threshold never
+    silently keeps them.
+    """
+    try:
+        sev = severity if isinstance(severity, Severity) else Severity(
+            (severity or "").strip().lower()
+        )
+    except ValueError:
+        return 0
+    try:
+        return SEVERITY_ORDER.index(sev)
+    except ValueError:
+        return 0
+
+
 # Confidence ordering, low -> high. Used by the --min-confidence filter
 # (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
 # omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty
