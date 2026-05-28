@@ -61,15 +61,18 @@ def run_batch(
     min_confidence: str = "low",
     min_severity: str = "informational",
     sort: str = "severity",
+    limit: int | str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
     *min_confidence* (POST_V01 Rank 8), *min_severity* (POST_V01 Rotation 2),
-    and *sort* (POST_V01 Rotation 2, Rank 3) are forwarded to ``analyze`` for
-    each item, so both filters and the worst-first ordering apply uniformly
-    across the batch — the common case for suppressing low-confidence
-    bytecode-heuristic noise and surfacing the high-impact leads first when
-    scanning a whole program scope.
+    *sort* (POST_V01 Rotation 2, Rank 3), and *limit* (POST_V01 Rotation 2,
+    R2.4) are forwarded to ``analyze`` for each item, so both filters, the
+    worst-first ordering, and the per-contract top-N cap apply uniformly across
+    the batch — the common case for suppressing low-confidence bytecode-
+    heuristic noise and surfacing the top high-impact leads per contract when
+    scanning a whole program scope. The cap is per-contract (each JSONL line
+    shows at most *limit* findings), not a cap on the number of contracts.
 
     Returns 0 if all items succeeded, 1 if any item raised an exception.
     """
@@ -85,6 +88,7 @@ def run_batch(
                 min_confidence=min_confidence,
                 min_severity=min_severity,
                 sort=sort,
+                limit=limit,
             )
         except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)

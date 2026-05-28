@@ -108,7 +108,8 @@ omen --contract <path-or-address> \
      [--format {json,h1md,sarif}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
-     [--sort {severity,none}]
+     [--sort {severity,none}] \
+     [--limit N]
 
 omen --list-checks [--format {text,json}]
 ```
@@ -121,6 +122,7 @@ omen --list-checks [--format {text,json}]
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
+- `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Listing the detection classes
@@ -327,6 +329,32 @@ severity and confidence) keep their original relative order, so the output stays
 deterministic. `--sort` applies in single-contract and `--batch` mode and in
 every output format.
 
+### Limiting findings
+
+The filters decide *which* findings survive and `--sort` decides *what order*
+they are read in; `--limit N` decides *how many* to read. After the default
+worst-first sort, a whole-program scan can still emit dozens of findings, and
+the common next triage move is "just show me the top N leads":
+
+```bash
+# keep only the 10 highest-impact leads (after the default worst-first sort)
+omen --contract Token.sol --input-type sol --check all --limit 10
+
+# combine the full triage stack: high-severity, high-confidence, top 5
+omen --contract Token.sol --input-type sol --check all \
+     --min-severity high --min-confidence high --limit 5
+```
+
+`--limit` runs *after* `--sort`, so with the default ordering the cap keeps the
+N most severe (then most confident) findings. Unlike the filters, the cap
+**does** change which findings appear, so omen reports it honestly: the JSON
+gains a `total_findings` (how many survived filtering before the cap) and a
+`truncated` boolean, and the `h1md` report shows `Findings: 10 of 47 (top 10
+shown; --limit)`. `N` must be a positive integer (`0` and negatives are
+rejected — a zero cap would silently hide every lead). In `--batch` mode the cap
+is **per-contract** (each JSONL line shows at most `N` findings), not a cap on
+the number of contracts scanned. `--limit` applies in every output format.
+
 ### Address mode (read-only, requires --rpc-url)
 
 ```bash
@@ -381,6 +409,8 @@ than returning a silently-empty report.
   "origin": "tests/fixtures/vulnerable-suicidal.sol",
   "checks": ["suicidal"],
   "finding_count": 1,
+  "total_findings": 1,
+  "truncated": false,
   "findings": [
     {
       "category": "suicidal",

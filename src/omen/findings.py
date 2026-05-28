@@ -72,6 +72,33 @@ def sort_key(finding: "Finding") -> tuple[int, int]:
     return (-severity_rank(finding.severity), -confidence_rank(finding.confidence))
 
 
+def parse_limit(limit: "int | str | None") -> int | None:
+    """Validate and normalise a ``--limit`` value (POST_V01 Rotation 2, R2.4).
+
+    Returns ``None`` for "no limit" (the default — keep every finding), or a
+    positive integer cap. ``0`` and negatives are rejected: a zero/negative cap
+    is almost always a mistake (it would silently hide every lead), so omen
+    surfaces it as a ``ValueError`` rather than emitting an empty report. A
+    string is accepted (the CLI hands argparse ints, but the primitive stays
+    usable from library/JSON callers) and parsed as a base-10 integer.
+    """
+    if limit is None:
+        return None
+    if isinstance(limit, str):
+        text = limit.strip()
+        if not text:
+            return None
+        try:
+            limit = int(text, 10)
+        except ValueError:
+            raise ValueError(f"--limit must be a positive integer, got {limit!r}")
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise ValueError(f"--limit must be a positive integer, got {limit!r}")
+    if limit <= 0:
+        raise ValueError(f"--limit must be a positive integer (>= 1), got {limit}")
+    return limit
+
+
 # Confidence ordering, low -> high. Used by the --min-confidence filter
 # (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
 # omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty
