@@ -33,9 +33,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"omen {__version__}"
     )
+    parser.add_argument(
+        "--list-checks",
+        action="store_true",
+        help=(
+            "print every detection class — its default severity, the input "
+            "modes it runs in, and the underlying Slither detector(s) it maps "
+            "to — then exit. Honors --format (json|text; text is the default "
+            "for this listing). Requires no contract, compiler, or network."
+        ),
+    )
 
     # --contract and --batch are mutually exclusive; exactly one is required.
-    target_group = parser.add_mutually_exclusive_group(required=True)
+    # (Not required when --list-checks is the requested action; that gate is
+    # enforced in main() so the listing can run with no target.)
+    target_group = parser.add_mutually_exclusive_group(required=False)
     target_group.add_argument(
         "--contract",
         help="path to a .sol, .vy, or .bin file, OR an on-chain contract address",
@@ -51,9 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--input-type",
-        required=True,
         choices=["sol", "vyper", "bytecode", "address"],
-        help="how to interpret --contract",
+        help="how to interpret --contract (required for a scan)",
     )
     parser.add_argument(
         "--check",
@@ -71,11 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--format",
-        default="json",
-        choices=["json", "h1md", "sarif"],
+        default=None,
+        choices=["json", "h1md", "sarif", "text"],
         help=(
-            "output format (default: json). sarif emits a SARIF 2.1.0 log for "
-            "GitHub code scanning / VSCode / CI ingestion."
+            "output format. For a scan: json (default), h1md, or sarif (a "
+            "SARIF 2.1.0 log for GitHub code scanning / VSCode / CI). For "
+            "--list-checks: text (default) or json."
         ),
     )
     parser.add_argument(
@@ -95,6 +107,31 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # --- --list-checks: introspection action, runs with no target/compiler ---
+    if args.list_checks:
+        from .catalog import render as render_catalog
+
+        # text is the natural default for a human-facing listing; json is
+        # available for tooling. The scan-oriented h1md/sarif formats do not
+        # apply to a static catalog.
+        fmt = args.format or "text"
+        if fmt not in ("text", "json"):
+            parser.error("--list-checks supports --format text or json")
+        print(render_catalog(fmt))
+        return 0
+
+    # Beyond here we are running a scan: a target and input type are required.
+    if args.contract is None and args.batch is None:
+        parser.error("one of --contract or --batch is required")
+    if args.contract is not None and args.batch is not None:
+        parser.error("--contract and --batch are mutually exclusive")
+    if args.input_type is None:
+        parser.error("--input-type is required for a scan")
+
+    # h1md and sarif do not apply to batch JSONL; json is the scan default.
+    if args.format is None:
+        args.format = "json"
 
     # Validate the address-mode gate early for a clear error.
     if args.input_type == "address" and not args.rpc_url:
