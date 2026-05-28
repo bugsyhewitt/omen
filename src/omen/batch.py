@@ -11,8 +11,12 @@ Usage patterns::
 
 Each line of output is valid JSON produced by ``json.dumps(report.to_dict())``.
 Comment lines (starting with ``#``) and blank lines in list files are skipped.
-Per-item errors are written to stderr and do not abort the batch; the exit code
-is 1 if any item failed, 0 if all items succeeded.
+Per-item errors are written to stderr and do not abort the batch.
+
+Exit code:
+    1  at least one item failed (errors take precedence over the gate)
+    3  --fail-on gate tripped on at least one (clean) item and nothing failed
+    0  all items succeeded and the gate (if set) never tripped
 """
 
 from __future__ import annotations
@@ -62,6 +66,7 @@ def run_batch(
     min_severity: str = "informational",
     sort: str = "severity",
     limit: int | str | None = None,
+    fail_on: str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -74,9 +79,18 @@ def run_batch(
     scanning a whole program scope. The cap is per-contract (each JSONL line
     shows at most *limit* findings), not a cap on the number of contracts.
 
-    Returns 0 if all items succeeded, 1 if any item raised an exception.
+    *fail_on* (POST_V01 Rotation 2, R2.5) is the CI exit-code gate, forwarded to
+    ``analyze`` for each item. The batch gate is the OR across items: if any
+    single contract trips the gate the batch exits 3 (so a pipeline step fails
+    even when scanning a whole program scope). A per-item failure still takes
+    precedence — errors are exit 1 — because a failed scan is a stronger signal
+    than a clean scan that found something.
+
+    Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
+    tripped on any item; otherwise 0.
     """
     any_error = False
+    gate_tripped = False
 
     for item in _iter_items(path, input_type):
         try:
@@ -89,6 +103,7 @@ def run_batch(
                 min_severity=min_severity,
                 sort=sort,
                 limit=limit,
+                fail_on=fail_on,
             )
         except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)
@@ -99,6 +114,12 @@ def run_batch(
             any_error = True
             continue
 
+        if report.gate_triggered:
+            gate_tripped = True
         print(json.dumps(report.to_dict()))
 
-    return 1 if any_error else 0
+    if any_error:
+        return 1
+    if gate_tripped:
+        return 3
+    return 0

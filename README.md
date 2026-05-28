@@ -109,7 +109,8 @@ omen --contract <path-or-address> \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
      [--sort {severity,none}] \
-     [--limit N]
+     [--limit N] \
+     [--fail-on {never,informational,low,medium,high,critical}]
 
 omen --list-checks [--format {text,json}]
 ```
@@ -123,6 +124,7 @@ omen --list-checks [--format {text,json}]
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
+- `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Listing the detection classes
@@ -411,6 +413,7 @@ than returning a silently-empty report.
   "finding_count": 1,
   "total_findings": 1,
   "truncated": false,
+  "gate_triggered": false,
   "findings": [
     {
       "category": "suicidal",
@@ -453,6 +456,48 @@ To upload in a GitHub Actions workflow:
 - uses: github/codeql-action/upload-sarif@v3
   with:
     sarif_file: omen.sarif
+```
+
+### Failing CI on findings
+
+Uploading SARIF surfaces findings as annotations, but it does not *fail* a
+pipeline. `--fail-on <severity>` is the CI gate: omen still prints the full
+report, then exits non-zero (code `3`) when at least one finding reaches the
+chosen severity. The default `never` keeps the historical always-exit-`0`
+behaviour, so existing invocations are unchanged.
+
+```bash
+# exit 3 if any high- or critical-severity lead is found; exit 0 otherwise
+omen --contract MyContract.sol --input-type sol --check all --fail-on high
+
+# tighten the gate to critical-only
+omen --contract MyContract.sol --input-type sol --check all --fail-on critical
+```
+
+This is the standard security-scanner pattern (cf. Slither's `--fail-high`,
+and the severity gates in semgrep/trivy/bandit). The exit codes are:
+
+| Code | Meaning |
+|---|---|
+| `0` | ran cleanly (and, if `--fail-on` was set, nothing reached the threshold) |
+| `1` | analysis failed (single mode) / at least one `--batch` item failed |
+| `2` | invalid arguments / input error (e.g. `--input-type address` with no `--rpc-url`) |
+| `3` | `--fail-on` gate tripped — a finding reached the chosen severity |
+
+The gate is evaluated over the findings that survived `--min-severity` /
+`--min-confidence` but **before** any `--limit` cap, so a display cap can never
+hide a gate-tripping finding from the exit code. A finding that `--min-severity`
+filtered out does **not** trip the gate — the two compose, so
+`--min-severity high --fail-on high` means "show and gate on high+ only". The
+same `gate_triggered` boolean appears in the JSON report so a consumer that
+reads stdout sees the same signal the exit code carries. In `--batch` mode the
+gate is the OR across items (any one tripping makes the batch exit `3`), and a
+per-item failure still takes precedence (`1` outranks `3`).
+
+A GitHub Actions step that should block the PR on a high-severity lead:
+
+```yaml
+- run: omen --contract MyContract.sol --input-type sol --check all --fail-on high
 ```
 
 ---

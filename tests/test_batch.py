@@ -28,9 +28,16 @@ from omen.batch import _iter_items, run_batch
 # ---------------------------------------------------------------------------
 
 
-def _make_report(origin: str = "test.sol") -> MagicMock:
-    """Return a minimal mock AnalysisReport whose to_dict() is stable."""
+def _make_report(origin: str = "test.sol", gate_triggered: bool = False) -> MagicMock:
+    """Return a minimal mock AnalysisReport whose to_dict() is stable.
+
+    ``gate_triggered`` mirrors the real AnalysisReport attribute (POST_V01
+    Rotation 2, R2.5): run_batch reads it to decide whether the --fail-on gate
+    tripped, so the mock must expose a concrete bool (a bare MagicMock attribute
+    is always truthy and would spuriously trip the gate).
+    """
     report = MagicMock()
+    report.gate_triggered = gate_triggered
     report.to_dict.return_value = {
         "tool": "omen",
         "version": "0.1.0",

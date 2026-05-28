@@ -6,14 +6,22 @@
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--sort {severity,none}] [--limit N]
+         [--fail-on {never,informational,low,medium,high,critical}]
 
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--sort {severity,none}] [--limit N]
+         [--fail-on {never,informational,low,medium,high,critical}]
 
 Text in, text out. JSON is the default machine-readable format.
 Batch mode always emits JSONL (one JSON object per contract).
+
+Exit codes:
+    0  ran cleanly (and, if --fail-on was set, nothing reached the threshold)
+    1  analysis failed (single mode) / at least one batch item failed
+    2  invalid arguments / input error (argparse / address mode missing --rpc-url)
+    3  --fail-on gate tripped: a finding reached the chosen severity (CI gate)
 """
 
 from __future__ import annotations
@@ -160,6 +168,19 @@ def build_parser() -> argparse.ArgumentParser:
             "a truncated flag. In --batch mode the cap is per-contract."
         ),
     )
+    parser.add_argument(
+        "--fail-on",
+        default="never",
+        choices=["never", "informational", "low", "medium", "high", "critical"],
+        help=(
+            "CI exit-code gate: exit non-zero (code 3) when a finding reaches "
+            "this severity. Default 'never' keeps the historical behaviour "
+            "(always exit 0 on a clean run). Use e.g. 'high' to fail a pipeline "
+            "step when omen surfaces a high/critical lead. Evaluated before "
+            "--limit, so a display cap can never hide a finding from the gate; "
+            "applies in single-contract and --batch mode."
+        ),
+    )
     return parser
 
 
@@ -209,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             min_severity=args.min_severity,
             sort=args.sort,
             limit=args.limit,
+            fail_on=args.fail_on,
         )
 
     # --- Single-contract mode ---
@@ -229,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
             min_severity=args.min_severity,
             sort=args.sort,
             limit=args.limit,
+            fail_on=args.fail_on,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)
@@ -241,7 +264,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Exit code convention: 0 = ran cleanly. Findings still mean a clean run;
     # callers parse the JSON to act on findings. (Bounty workflows want the
-    # report regardless of whether anything was found.)
+    # report regardless of whether anything was found.) The one exception is
+    # the --fail-on CI gate (POST_V01 Rotation 2, R2.5): when it trips, exit 3
+    # so a pipeline step fails while staying distinguishable from an input
+    # error (2) or an analysis crash (1). The report is still printed first.
+    if report.gate_triggered:
+        return 3
     return 0
 
 
