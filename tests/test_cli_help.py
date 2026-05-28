@@ -30,7 +30,7 @@ def test_help_lists_required_flags():
 
 def test_help_lists_input_type_choices():
     text = _help_text()
-    for choice in ("sol", "bytecode", "address"):
+    for choice in ("sol", "vyper", "bytecode", "address"):
         assert choice in text
 
 

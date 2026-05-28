@@ -16,6 +16,7 @@ from typing import Any
 
 from . import CATEGORIES, __version__
 from .detectors import (
+    VYPER_SUPPORTED_CATEGORIES,
     scan_bytecode_opcodes,
     scan_greedy,
     scan_prodigal,
@@ -24,7 +25,8 @@ from .detectors import (
 )
 from .findings import DEFAULT_SEVERITY, Evidence, Finding, Severity
 from .solc_env import require_solc
-from .sources import SourceInput, load_input
+from .sources import InputError, SourceInput, load_input
+from .vyper_env import require_vyper
 
 
 def resolve_checks(check: str) -> list[str]:
@@ -74,13 +76,45 @@ def _impact_to_severity(category: str, impact: str | None) -> Severity:
     return DEFAULT_SEVERITY.get(category, Severity.MEDIUM)
 
 
+def _resolve_vyper_checks(checks: list[str]) -> list[str]:
+    """Filter a check list down to the categories Slither supports for Vyper.
+
+    POST_V01 Rank 6: Slither's Vyper front-end only supports a subset of the
+    Solidity detectors. For `--check all` we silently narrow to the supported
+    subset; for an explicit single unsupported class we raise a clear error so
+    the user is not handed an always-empty report.
+    """
+    supported = [c for c in checks if c in VYPER_SUPPORTED_CATEGORIES]
+    if not supported:
+        names = ", ".join(sorted(VYPER_SUPPORTED_CATEGORIES))
+        requested = ", ".join(checks)
+        raise InputError(
+            f"check(s) {requested!r} are not supported for Vyper input; "
+            f"Slither's Vyper front-end covers only: {names}. "
+            "Re-run with one of those or with --check all."
+        )
+    return supported
+
+
 def _analyze_source(src: SourceInput, checks: list[str]) -> list[Finding]:
-    """Run Slither detectors for the requested categories on a .sol file."""
-    require_solc()  # raises SolcUnavailableError with actionable guidance
+    """Run Slither detectors for the requested categories on a source file.
+
+    Handles both Solidity (`.sol`, needs solc) and Vyper (`.vy`, needs the
+    `vyper` binary) input. Slither auto-detects the language from the file
+    extension via crytic-compile; omen's job is to ensure the right compiler
+    is present and, for Vyper, to restrict to the supported detector subset.
+    """
+    if src.input_type == "vyper":
+        require_vyper()  # raises VyperUnavailableError with actionable guidance
+        checks = _resolve_vyper_checks(checks)
+        source_path = src.vyper_path
+    else:
+        require_solc()  # raises SolcUnavailableError with actionable guidance
+        source_path = src.sol_path
 
     from slither import Slither
 
-    slither = Slither(src.sol_path)
+    slither = Slither(source_path)
 
     # Register every detector class needed by the requested checks, keeping
     # a reverse map from slither check-id -> omen category.
@@ -281,7 +315,7 @@ def analyze(
     checks = resolve_checks(check)
     src = load_input(contract, input_type, rpc_url)
 
-    if src.input_type == "sol":
+    if src.input_type in ("sol", "vyper"):
         findings = _analyze_source(src, checks)
     else:  # bytecode or address (both reduce to bytecode analysis)
         findings = _analyze_bytecode(src, checks)

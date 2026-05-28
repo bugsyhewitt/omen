@@ -1,7 +1,8 @@
 """Input loading for omen.
 
-Three input modes:
+Four input modes:
   sol       a path to a .sol source file (analyzed by Slither, needs solc)
+  vyper     a path to a .vy source file (analyzed by Slither, needs vyper)
   bytecode  a path to a file holding hex EVM runtime bytecode (no solc)
   address   an on-chain contract address; bytecode is fetched via JSON-RPC
 
@@ -37,8 +38,9 @@ class InputError(ValueError):
 class SourceInput:
     """A resolved input ready for analysis."""
 
-    input_type: str  # "sol" | "bytecode" | "address"
+    input_type: str  # "sol" | "vyper" | "bytecode" | "address"
     sol_path: str | None = None
+    vyper_path: str | None = None
     bytecode: bytes | None = None
     address: str | None = None
     origin: str = ""  # human-readable description of where this came from
@@ -52,6 +54,17 @@ def load_sol(path: str) -> SourceInput:
         # not fatal, but warn-by-error in v0.1 to keep modes honest
         raise InputError(f"expected a .sol file for --input-type sol, got: {path}")
     return SourceInput(input_type="sol", sol_path=str(p), origin=str(p))
+
+
+def load_vyper(path: str) -> SourceInput:
+    p = Path(path)
+    if not p.is_file():
+        raise InputError(f"source file not found: {path}")
+    if p.suffix.lower() not in (".vy",):
+        raise InputError(
+            f"expected a .vy file for --input-type vyper, got: {path}"
+        )
+    return SourceInput(input_type="vyper", vyper_path=str(p), origin=str(p))
 
 
 def load_bytecode(path: str) -> SourceInput:
@@ -95,6 +108,8 @@ def load_input(
     """Dispatch to the right loader based on declared input type."""
     if input_type == "sol":
         return load_sol(contract)
+    if input_type == "vyper":
+        return load_vyper(contract)
     if input_type == "bytecode":
         return load_bytecode(contract)
     if input_type == "address":

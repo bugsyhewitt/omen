@@ -70,6 +70,20 @@ CATEGORY_TO_SLITHER: dict[str, list[str]] = {
 }
 
 
+# [Worker decision (R7, POST_V01 Rank 6): Slither's Vyper front-end supports
+# only a subset of its Solidity detectors — Vyper's IR/AST does not carry the
+# same information several Solidity-specific detectors rely on. POST_V01 Rank 6
+# names reentrancy and arbitrary-send (omen's `prodigal`) as the covered
+# classes; those map onto Slither detectors that operate on the language-neutral
+# IR and run cleanly on Vyper. The remaining omen classes are Solidity-only
+# concepts (suicidal/selfdestruct, locked-ether, the NatSpec-keyed
+# protected-vars, tx.origin, delegatecall/upgrade proxy patterns) and are
+# excluded for Vyper input rather than silently registered as no-ops. Asking
+# for an unsupported class on a .vy file is reported as an explicit InputError
+# upstream so the user gets a clear message instead of an empty report.]
+VYPER_SUPPORTED_CATEGORIES: frozenset[str] = frozenset({"reentrancy", "prodigal"})
+
+
 def slither_detector_classes(category: str) -> list[type]:
     """Return the Slither detector classes for an omen category."""
     from slither.detectors import all_detectors

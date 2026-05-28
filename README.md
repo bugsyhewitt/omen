@@ -68,8 +68,15 @@ solc-select install 0.8.19
 solc-select use 0.8.19
 ```
 
+Vyper source mode (`--input-type vyper`) compiles `.vy` files and needs a
+`vyper` binary on `PATH` instead of `solc`:
+
+```bash
+pip install vyper        # or: pipx install vyper
+```
+
 Bytecode mode (`--input-type bytecode`) and address mode (`--input-type address`)
-need **no** `solc`.
+need **no** compiler at all.
 
 ---
 
@@ -77,13 +84,13 @@ need **no** `solc`.
 
 ```
 omen --contract <path-or-address> \
-     --input-type {sol,bytecode,address} \
+     --input-type {sol,vyper,bytecode,address} \
      --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,all} \
      [--rpc-url URL] \
      [--format {json,h1md,sarif}]
 ```
 
-- `--contract` — a path to a `.sol` source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
+- `--contract` — a path to a `.sol` source file, a path to a `.vy` (Vyper) source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
 - `--input-type` — how to interpret `--contract`.
 - `--check` — which class to scan for (`all` runs every class). Default: `all`.
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
@@ -190,6 +197,37 @@ omen --contract 0xYourContractAddress \
 omen fetches the deployed bytecode with `eth_getCode` and runs bytecode-level
 detection. It never sends a transaction.
 
+### Vyper source mode (`--input-type vyper`, needs the `vyper` binary)
+
+Many high-TVL DeFi protocols (Curve, Yearn) are written in [Vyper](https://docs.vyperlang.org/).
+omen analyzes `.vy` source via Slither's Vyper front-end:
+
+```bash
+omen --contract MyContract.vy --input-type vyper --check reentrancy
+omen --contract MyContract.vy --input-type vyper --check all
+```
+
+Slither's Vyper front-end supports a **subset** of its Solidity detectors, so
+omen restricts Vyper input to the classes that map onto language-neutral
+detectors:
+
+| Vyper-supported class | Detects |
+|---|---|
+| **reentrancy** | withdraw-before-state-update (CEI violation) |
+| **prodigal** | leaks Ether to an arbitrary/caller-controlled address |
+
+`--check all` on a `.vy` file automatically narrows to that subset. Asking for
+a Solidity-only class (e.g. `--check suicidal`, `--check access-control`,
+`--check delegatecall`) on Vyper input fails fast with a clear error rather
+than returning a silently-empty report.
+
+> **Toolchain note.** Vyper compilation is delegated to whatever `vyper` is on
+> `PATH` (there is no `solc-select` equivalent for Vyper, so omen does not
+> auto-provision one). Slither's Vyper support tracks specific compiler
+> versions; if your installed Slither/crytic-compile cannot compile your
+> contract's Vyper version, omen surfaces the compiler error rather than
+> masking it.
+
 ---
 
 ## Example output (JSON)
@@ -251,9 +289,10 @@ To upload in a GitHub Actions workflow:
 ## Scope
 
 In scope: the classes above (the four MAIAN classes, reentrancy, access-control,
-tx-origin, delegatecall, and upgrade), on Ethereum, from Solidity source / EVM
-bytecode / an on-chain address (read-only). access-control, tx-origin,
-delegatecall, and upgrade are source-mode only.
+tx-origin, delegatecall, and upgrade), on Ethereum, from Solidity source / Vyper
+source / EVM bytecode / an on-chain address (read-only). access-control,
+tx-origin, delegatecall, and upgrade are source-mode only. Vyper input covers
+the reentrancy and prodigal subset that Slither's Vyper front-end supports.
 
 Not in scope: a custom symbolic-execution engine (omen uses Slither's), non-
 Ethereum chains, DeFi-specific patterns (oracle manipulation, flash loans,
@@ -270,8 +309,9 @@ solc-select install 0.8.19 && solc-select use 0.8.19   # for source-mode tests
 pytest
 ```
 
-Bytecode and address tests run without `solc`; source-mode tests skip cleanly
-if no `solc` is present.
+Bytecode and address tests run without `solc`; Solidity source-mode tests skip
+cleanly if no `solc` is present, and Vyper source-mode tests skip cleanly if no
+`vyper` is present (`pip install vyper`).
 
 ---
 
