@@ -206,6 +206,31 @@ changes.
 
 **Rank: 6 — expanding addressable contract universe**
 
+> **STATUS: ✅ IMPLEMENTED (R7, 2026-05-28).** `--input-type vyper` analyzes
+> `.vy` source via Slither's Vyper front-end. New `vyper` input type wired
+> through `sources.py` (`load_vyper`, a `.vy` loader), `analyzer.py`
+> (`_analyze_source` now handles both Solidity and Vyper; selects the source
+> path and, for Vyper, narrows to the supported subset), the CLI
+> `--input-type` choices, and `batch.py`'s error handling. A new `vyper_env.py`
+> module mirrors `solc_env.py`: `require_vyper()` / `vyper_status()` /
+> `VyperUnavailableError` (stdlib `shutil.which` — no `solc-select` equivalent
+> exists for Vyper, so omen does not auto-provision a compiler). **Subset
+> decision:** Slither's Vyper front-end supports only a subset of its Solidity
+> detectors, so omen restricts Vyper input to `reentrancy` and `prodigal`
+> (`VYPER_SUPPORTED_CATEGORIES` in `detectors.py`) — the two POST_V01-named
+> covered classes. `--check all` on a `.vy` file silently narrows to that
+> subset; an explicit unsupported class (e.g. `suicidal`) raises a clear
+> `InputError` instead of returning an empty report. Fixtures
+> (`vulnerable-reentrancy.vy`, `clean-reentrancy.vy`, intentionally with no
+> `# @version` pragma so they compile on whatever vyper is present) and tests
+> (`tests/test_vyper_support.py`) ship with it; the `requires_vyper` skip
+> marker in `conftest.py` mirrors `requires_solc`. **Toolchain caveat:**
+> crytic-compile's Vyper support tracks specific compiler versions (it fully
+> supports vyper 0.3.7); the end-to-end detection tests skip cleanly on a
+> slither/crytic-compile↔vyper version mismatch rather than failing, since that
+> is a toolchain limitation, not an omen integration defect — omen's job is to
+> route the `.vy` file to Slither, which the wiring tests verify it does.
+
 **What:** Slither supports Vyper (via `--from-vyper`). Many DeFi protocols
 (Curve, Yearn) use Vyper. Add `--input-type vyper` that delegates to Slither's
 Vyper compilation path. Detection classes available in Slither for Vyper are a

@@ -25,6 +25,7 @@ from typing import Generator
 from .analyzer import analyze
 from .solc_env import SolcUnavailableError
 from .sources import InputError
+from .vyper_env import VyperUnavailableError
 
 
 def _iter_items(path: str, input_type: str) -> Generator[str, None, None]:
@@ -79,7 +80,7 @@ def run_batch(
                 rpc_url=rpc_url,
                 min_confidence=min_confidence,
             )
-        except (InputError, SolcUnavailableError) as exc:
+        except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)
             any_error = True
             continue

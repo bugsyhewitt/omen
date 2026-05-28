@@ -1,6 +1,6 @@
 """omen command-line interface.
 
-    omen --contract <path-or-address> --input-type {sol,bytecode,address}
+    omen --contract <path-or-address> --input-type {sol,vyper,bytecode,address}
          --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
          [--rpc-url URL] [--format {json,h1md,sarif}]
          [--min-confidence {low,medium,high}]
@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     target_group = parser.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
         "--contract",
-        help="path to a .sol or .bin file, OR an on-chain contract address",
+        help="path to a .sol, .vy, or .bin file, OR an on-chain contract address",
     )
     target_group.add_argument(
         "--batch",
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input-type",
         required=True,
-        choices=["sol", "bytecode", "address"],
+        choices=["sol", "vyper", "bytecode", "address"],
         help="how to interpret --contract",
     )
     parser.add_argument(
@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     from .formats import render
     from .solc_env import SolcUnavailableError
     from .sources import InputError
+    from .vyper_env import VyperUnavailableError
 
     try:
         report = analyze(
@@ -127,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             rpc_url=args.rpc_url,
             min_confidence=args.min_confidence,
         )
-    except (InputError, SolcUnavailableError) as exc:
+    except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - surface analysis errors cleanly
