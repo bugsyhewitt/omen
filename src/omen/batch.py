@@ -60,13 +60,15 @@ def run_batch(
     rpc_url: str | None = None,
     min_confidence: str = "low",
     min_severity: str = "informational",
+    sort: str = "severity",
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
-    *min_confidence* (POST_V01 Rank 8) and *min_severity* (POST_V01 Rotation 2)
-    are forwarded to ``analyze`` for each item, so both filters apply uniformly
+    *min_confidence* (POST_V01 Rank 8), *min_severity* (POST_V01 Rotation 2),
+    and *sort* (POST_V01 Rotation 2, Rank 3) are forwarded to ``analyze`` for
+    each item, so both filters and the worst-first ordering apply uniformly
     across the batch — the common case for suppressing low-confidence
-    bytecode-heuristic noise and surfacing only the high-impact leads when
+    bytecode-heuristic noise and surfacing the high-impact leads first when
     scanning a whole program scope.
 
     Returns 0 if all items succeeded, 1 if any item raised an exception.
@@ -82,6 +84,7 @@ def run_batch(
                 rpc_url=rpc_url,
                 min_confidence=min_confidence,
                 min_severity=min_severity,
+                sort=sort,
             )
         except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)

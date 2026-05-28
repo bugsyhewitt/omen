@@ -107,7 +107,8 @@ omen --contract <path-or-address> \
      [--rpc-url URL] \
      [--format {json,h1md,sarif}] \
      [--min-confidence {low,medium,high}] \
-     [--min-severity {informational,low,medium,high,critical}]
+     [--min-severity {informational,low,medium,high,critical}] \
+     [--sort {severity,none}]
 
 omen --list-checks [--format {text,json}]
 ```
@@ -119,6 +120,7 @@ omen --list-checks [--format {text,json}]
 - `--format` — `json` (machine-readable, default), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
+- `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Listing the detection classes
@@ -303,6 +305,27 @@ two filters **compose**: a finding must clear both the severity and the
 confidence threshold to survive. Like the confidence filter, severity filtering
 runs after analysis (so `finding_count` always matches what you see) and
 applies in every output format and in `--batch` mode.
+
+### Sorting findings
+
+Once the filters narrow a scan down, you still read the report top-down. By
+default omen orders findings **worst-first** — highest severity, then highest
+confidence — so the high-impact leads sit at the top of every report instead of
+being scattered through the raw detector-registration order:
+
+```bash
+# default: findings are sorted severity-then-confidence (no flag needed)
+omen --contract Token.sol --input-type sol --check all
+
+# opt out and keep the raw detector order
+omen --contract Token.sol --input-type sol --check all --sort none
+```
+
+Sorting is a pure reordering applied *after* `--min-severity`/`--min-confidence`,
+so it never adds or drops a finding — `finding_count` is unaffected. Ties (same
+severity and confidence) keep their original relative order, so the output stays
+deterministic. `--sort` applies in single-contract and `--batch` mode and in
+every output format.
 
 ### Address mode (read-only, requires --rpc-url)
 
