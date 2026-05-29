@@ -45,6 +45,8 @@ def test_help_lists_format_choices():
     assert "json" in text and "h1md" in text and "sarif" in text
     # text format (POST_V01 Rotation 2, R2.6) is a scan output choice too.
     assert "text" in text
+    # gha format (POST_V01 R3.5): GitHub Actions workflow-command annotations.
+    assert "gha" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -77,6 +79,37 @@ def test_text_format_scan_runs_end_to_end():
     assert "findings:" in out
     assert "suicidal" in out
     assert "HIGH" in out
+
+
+def test_gha_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format gha is exercisable in CI.
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "gha",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # gha output is one workflow command per line (or a single ::notice when
+    # there are no findings) — never JSON.
+    assert not out.lstrip().startswith("{")
+    for line in out.splitlines():
+        assert line.startswith("::"), f"non-command line in gha output: {line!r}"
 
 
 def test_cli_help_runs_as_subprocess():

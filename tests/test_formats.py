@@ -6,7 +6,7 @@ import json
 
 from omen.analyzer import AnalysisReport
 from omen.findings import Evidence, Finding, Severity
-from omen.formats import render, to_h1md, to_json, to_sarif, to_text
+from omen.formats import render, to_gha, to_h1md, to_json, to_sarif, to_text
 
 
 def _report() -> AnalysisReport:
@@ -53,6 +53,7 @@ def test_render_dispatch():
     assert render(_report(), "h1md").startswith("#")
     assert render(_report(), "sarif").startswith("{")
     assert render(_report(), "text").startswith("omen ")
+    assert render(_report(), "gha").startswith("::")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -284,3 +285,170 @@ def test_sarif_empty_report_is_valid():
     data = json.loads(to_sarif(report))
     assert data["runs"][0]["results"] == []
     assert data["runs"][0]["tool"]["driver"]["rules"] == []
+
+
+# --- gha format: GitHub Actions workflow-command annotations (R3.5) --------
+
+
+def test_gha_one_command_per_finding_in_report_order():
+    # _source_report() has a high then a medium finding, in that order.
+    text = to_gha(_source_report())
+    lines = text.splitlines()
+    assert len(lines) == 2
+    # every line is a workflow command
+    assert all(line.startswith("::") for line in lines)
+
+
+def test_gha_severity_maps_to_level():
+    # high -> ::error, medium -> ::warning
+    lines = to_gha(_source_report()).splitlines()
+    assert lines[0].startswith("::error ")
+    assert lines[1].startswith("::warning ")
+
+
+def test_gha_low_and_informational_map_to_notice():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["overflow"],
+        findings=[
+            Finding(
+                category="overflow",
+                severity=Severity.LOW,
+                title="t",
+                description="d",
+                detector="slither:divide-before-multiply",
+                contract="Vuln",
+                confidence="low",
+                evidence=Evidence(source_mapping=["Vuln.sol#4-5"]),
+            ),
+            Finding(
+                category="overflow",
+                severity=Severity.INFORMATIONAL,
+                title="t2",
+                description="d2",
+                detector="slither:tautology",
+                contract="Vuln",
+                confidence="low",
+                evidence=Evidence(source_mapping=["Vuln.sol#9"]),
+            ),
+        ],
+    )
+    lines = to_gha(report).splitlines()
+    assert lines[0].startswith("::notice ")
+    assert lines[1].startswith("::notice ")
+
+
+def test_gha_source_finding_carries_file_and_line_range():
+    # access-control finding maps to Vuln.sol#12-18.
+    line = to_gha(_source_report()).splitlines()[0]
+    assert "file=Vuln.sol" in line
+    assert "line=12" in line
+    assert "endLine=18" in line
+
+
+def test_gha_single_line_mapping_has_no_endline():
+    # tx-origin finding maps to Vuln.sol#25 (no end line).
+    line = to_gha(_source_report()).splitlines()[1]
+    assert "file=Vuln.sol" in line
+    assert "line=25" in line
+    assert "endLine=" not in line
+
+
+def test_gha_title_carries_severity_category_and_confidence():
+    line = to_gha(_source_report()).splitlines()[0]
+    assert "title=omen high%3A access-control [high]" in line
+
+
+def test_gha_message_is_after_the_double_colon():
+    line = to_gha(_source_report()).splitlines()[0]
+    # The data segment follows the final '::' separator.
+    _, _, message = line.partition("::")  # strip leading '::'
+    _, _, message = message.partition("::")  # split off the data segment
+    assert message == "missing onlyOwner guard"
+
+
+def test_gha_bytecode_finding_has_no_file_anchor():
+    # The default _report() is a bytecode finding (opcodes, no source mapping).
+    line = to_gha(_report()).splitlines()[0]
+    assert line.startswith("::error ")  # high severity
+    assert "file=" not in line
+    assert "line=" not in line
+    # still self-describing via the title
+    assert "title=omen high%3A suicidal [high]" in line
+
+
+def test_gha_escapes_newlines_and_percent_in_message():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["reentrancy"],
+        findings=[
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description="line one\nline two 100% sure",
+                detector="slither:reentrancy-eth",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#1-2"]),
+            )
+        ],
+    )
+    line = to_gha(report).splitlines()[0]
+    # newline and percent are escaped so the command stays on one line
+    assert "\n" not in line
+    assert "%0A" in line
+    assert "%25" in line
+
+
+def test_gha_escapes_colon_and_comma_in_file_property():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="weird",
+        checks=["reentrancy"],
+        findings=[
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:reentrancy-eth",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["a,b:c.sol#3"]),
+            )
+        ],
+    )
+    line = to_gha(report).splitlines()[0]
+    # the comma and colon in the path are escaped so they do not split props
+    assert "file=a%2Cb%3Ac.sol" in line
+    assert "line=3" in line
+
+
+def test_gha_empty_report_emits_a_single_notice():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    text = to_gha(report)
+    lines = text.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("::notice ")
+    assert "Clean.sol" in lines[0]
+    assert "no findings" in lines[0]
+
+
+def test_gha_render_dispatch_matches_to_gha():
+    assert render(_source_report(), "gha") == to_gha(_source_report())
