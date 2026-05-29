@@ -1565,3 +1565,95 @@ land.
 > output" section (contrasting the platform-agnostic path with the GitHub-specific
 > sarif/gha paths, with a `dorny/test-reporter` workflow example) plus usage-block
 > and flag-list mentions.
+
+### R3.7. `--format checkstyle` Checkstyle XML code-review annotations
+
+**Rank: 1 (Rotation 30) — the code-review-side complement to junit/sarif/gha**
+
+> **STATUS: ✅ IMPLEMENTED (R30, 2026-05-29).** `omen … --format checkstyle`
+> renders a scan as a [Checkstyle XML](https://checkstyle.sourceforge.io/)
+> document — one `<error>` per finding, grouped under `<file>` elements keyed on
+> the source path (or contract identifier for bytecode findings), under a single
+> `<checkstyle version="8.0">` root. Checkstyle XML is the static-analysis-
+> specific lingua franca ingested natively by **GitLab CI's Code Quality widget**
+> (the diff-side issue list every MR shows), **Reviewdog** (`-f=checkstyle` posts
+> findings as PR review comments on the offending line), **SonarQube** (via the
+> generic-issue importer), and the **Jenkins Checkstyle / Warnings Next
+> Generation** plugin. omen findings surface as **code-review annotations** in
+> the MR/PR diff on each of those platforms with no upload step and no paid tier.
+>
+> **Why (R30 reasoning).** The rotation goal named `--format teamcity` vs
+> `--format checkstyle` as the next CI-integration output format, to verify
+> which (if either) was already shipped before implementing. A grep confirmed
+> **neither** appears in source, tests, README, or POST_V01 — both are
+> unshipped. Between the two, **Checkstyle wins decisively** on audience reach
+> and architectural fit:
+> - **TeamCity** consumes JUnit XML directly via its service-message importer,
+>   so the `teamcity` audience is already covered by R29's `--format junit`.
+>   Shipping `teamcity` would be a single-vendor service-message dialect
+>   (``##teamcity[inspection ...]``) duplicating coverage R29 already provides,
+>   for the audience JUnit already serves.
+> - **Checkstyle XML**, by contrast, opens a *new* audience the existing four
+>   CI-integration formats (sarif/gha/junit + the original h1md) do not cover at
+>   all: the **code-review / MR-diff side** of CI rather than the *tests tab* or
+>   the GitHub-Advanced-Security alert view. GitLab Code Quality, Reviewdog, and
+>   SonarQube are all major bounty-/security-relevant ecosystems with no native
+>   ingestion path for any of omen's current four CI formats — Checkstyle is the
+>   one that unlocks all of them in a single formatter.
+>
+> The R3.x CI-integration arc now reads: `--format sarif` (GitHub Advanced
+> Security, paid, upload) → `--format gha` (GitHub Actions only, free, no
+> upload, annotations) → `--format junit` (every CI's tests tab, free, no
+> upload, also covers TeamCity) → `--format checkstyle` (GitLab Code Quality /
+> Reviewdog / SonarQube / Jenkins code-review side, free, no upload). The four
+> together cover the GitHub paid path, the GitHub free path, the platform-
+> agnostic tests-tab path, and the platform-agnostic code-review-diff path with
+> no audience overlap.
+>
+> **Surface.** A pure formatter in `formats.py` (`to_checkstyle`), riding the
+> exact `render(report, fmt)` seam every other formatter uses — it never
+> re-orders or re-filters, just projects the already-triaged `report.findings`.
+> omen's five-level severity (`critical`/`high`/`medium`/`low`/`informational`)
+> projects onto Checkstyle's three (`error`/`warning`/`info`) the same way the
+> SARIF/gha formatters do (`_SEVERITY_TO_CHECKSTYLE_LEVEL`: critical/high →
+> `error`, medium → `warning`, low/informational → `info`), and the original
+> omen severity is preserved verbatim in an `omen-severity` attribute (plus
+> `omen-category` and `omen-confidence`) so the projection is **lossless** for
+> any consumer that reads the extra attributes — mirroring how `to_sarif`/
+> `to_gha`/`to_junit` keep the original severity alongside the projected level.
+> Source-mode findings reuse the `Contract.sol#start-end` mapping split (the
+> same shape SARIF/gha consume) for the `line` attribute; Checkstyle has no
+> native `endLine` so `line` carries the issue's primary line and the range is
+> available via the lossless `omen-*` round-trip if needed. Each `<error>`'s
+> `source` attribute holds the detector identity (standard Checkstyle
+> convention for "which rule fired"); the `message` is the finding's
+> description with newlines collapsed (Checkstyle messages are conventionally
+> single-line so consumers that render them inline — GitLab Code Quality,
+> Reviewdog — don't break layout). Findings sharing a file are grouped under
+> one `<file>` element, in the report's existing worst-first order, so a
+> consumer rendering top-to-bottom sees the worst-affected file first.
+> Bytecode findings (no source mapping) anchor to the contract identifier as
+> the `<file name>` and omit `line`, keeping the document well-formed; an
+> empty report emits a valid `<checkstyle>` with no `<file>` children. All
+> attribute values are XML-escaped via `xml.sax.saxutils.quoteattr` so a `<`/
+> `&`/`"` in a path or description cannot break the document. The CLI adds
+> `checkstyle` to `--format`'s choices; like `h1md`/`sarif`/`gha`/`junit` it
+> is a single-`--contract` scan format (a `--batch` run always emits JSONL
+> regardless of `--format`, the existing behaviour, so `checkstyle` needs no
+> batch wiring). Pure stdlib (`xml.sax.saxutils`); no dependency, no detector/
+> analysis-path change. Tests in `tests/test_formats.py` (15 new cases): well-
+> formed XML with a `checkstyle` root + version attr, one `<error>` per
+> finding grouped by file in report order, severity → three-level mapping
+> across the full taxonomy, original severity/category/confidence preserved
+> verbatim, source location → `line` + `file` attrs, message carries
+> description, bytecode finding anchors to contract with no `line`, different
+> files → separate `<file>` elements, same file → grouped under one `<file>`,
+> empty report → valid root with no `<file>` children, XML escaping of
+> special chars in attrs, newline collapsing in messages, and render
+> dispatch; plus a `--format checkstyle` end-to-end subprocess scan and the
+> `--help` choice list in `tests/test_cli_help.py`. README gains a
+> "Checkstyle XML output" section (contrasting the code-review-side path
+> with the sarif/gha/junit paths, with a GitLab Code Quality artifact
+> example and a Reviewdog pipeline example) plus usage-block and flag-list
+> mentions.
+

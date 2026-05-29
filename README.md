@@ -147,7 +147,7 @@ omen --list-checks [--format {text,json}]
 - `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
 - `--exclude-check` — remove one or more categories from the `--check` set (the inverse selector). Accepts a single category or a **comma-separated list** (not `all`). Pairs with the default `--check all` to express "every class except these" — e.g. `--exclude-check greedy,prodigal` to drop the two noisiest bytecode heuristics. Excluding a class `--check` did not select is a no-op; excluding *every* selected class is a usage error (exit `2`). Default: exclude nothing. Applies in single-contract and `--batch` mode alike. See [Excluding classes from a scan](#excluding-classes-from-a-scan).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
-- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), or `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)).
+- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), or `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
@@ -906,6 +906,79 @@ In a workflow, combine it with a JUnit reporter (and optionally
 
 Like the other scan formats, `junit` applies to single-`--contract` mode; a
 `--batch` run always emits its JSONL stream.
+
+### Checkstyle XML output
+
+`--format junit` projects findings as **test results** (one failing testcase
+per finding). `--format checkstyle` projects them as **code-review annotations**
+keyed on a file and line — the shape the *review-side* static-analysis ecosystem
+expects. Where the SARIF/JUnit paths target the *tests* tab or the GitHub-
+Advanced-Security alert view, Checkstyle XML is the lingua franca consumed
+natively by:
+
+- **GitLab CI** — drop it into the [Code Quality artifact](https://docs.gitlab.com/ee/ci/testing/code_quality.html) and findings render
+  as inline issues on the MR diff (and as the **Code Quality** widget on the MR
+  overview), with no upload step or paid feature.
+- **[Reviewdog](https://github.com/reviewdog/reviewdog)** — `reviewdog -f=checkstyle` posts each finding as a
+  GitHub/GitLab/Bitbucket PR review comment on the offending line.
+- **SonarQube** — imports Checkstyle XML directly via the standard
+  [SonarQube generic issue importer](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/).
+- **Jenkins** — the [Checkstyle plugin](https://plugins.jenkins.io/checkstyle/) /
+  Warnings Next Generation plugin renders it as a per-build trend graph and
+  flags new issues on the PR.
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format checkstyle > omen-checkstyle.xml
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<checkstyle version="8.0">
+  <file name="MyContract.sol">
+    <error severity="error" line="42" message="external call before state update" source="slither:reentrancy-eth" omen-severity="high" omen-category="reentrancy" omen-confidence="high"/>
+    <error severity="warning" line="12" message="tx.origin used for authorization" source="slither:tx-origin" omen-severity="medium" omen-category="tx-origin" omen-confidence="medium"/>
+  </file>
+</checkstyle>
+```
+
+omen's five-level severity (`critical`/`high`/`medium`/`low`/`informational`)
+projects onto Checkstyle's three (`error`/`warning`/`info`) the same way the
+SARIF/gha formatters do — `critical`/`high` → `error`, `medium` → `warning`,
+`low`/`informational` → `info` — and the original omen severity is preserved
+verbatim in the `omen-severity` attribute (plus `omen-category` and
+`omen-confidence`) so the projection is **lossless** for any consumer that
+reads the extra attributes. The `source` attribute carries the underlying
+detector identity (the standard Checkstyle convention for "which rule fired").
+Findings sharing a file are grouped under one `<file>` element, in the report's
+existing worst-first order, so a consumer rendering top-to-bottom sees the
+worst-affected file first. A bytecode-mode finding (no source mapping) anchors
+to the contract identifier as the file name and omits the `line` attribute, so
+the document stays well-formed.
+
+In a **GitLab CI** workflow, point the Code Quality report at the file to get
+diff-side annotations on every MR with no upload step or paid tier:
+
+```yaml
+omen-scan:
+  script:
+    - omen --contract MyContract.sol --input-type sol --check all --format checkstyle > omen-checkstyle.xml
+  artifacts:
+    reports:
+      codequality: omen-checkstyle.xml
+```
+
+In a **Reviewdog** pipeline, pipe findings to PR review comments:
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format checkstyle \
+  | reviewdog -f=checkstyle -name=omen -reporter=github-pr-review
+```
+
+A clean scan (no findings) emits a valid `<checkstyle>` document with no
+`<file>` children — the well-formed "scan ran, found nothing" shape every
+Checkstyle consumer recognises. Like the other scan formats, `checkstyle`
+applies to single-`--contract` mode; a `--batch` run always emits its JSONL
+stream.
 
 ### SARIF-native suppression with a baseline
 

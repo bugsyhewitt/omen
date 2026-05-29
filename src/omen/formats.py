@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -20,6 +20,13 @@ and TeamCity all ingest natively. Each finding becomes a failing ``<testcase>``
 (with a ``<failure>`` carrying the description), grouped under one
 ``<testsuite>``; it is the platform-agnostic "surface omen findings in the CI
 test-results tab and fail the build" lever that works on essentially every CI.
+The checkstyle format (POST_V01 R3.7) emits a Checkstyle XML document — the
+static-analysis-specific lingua franca consumed natively by GitLab CI's
+**Code Quality** widget (which renders the diff-side issue list every MR shows),
+Reviewdog, SonarQube, the Jenkins Checkstyle plugin, and most code-review bots.
+Where ``junit`` projects findings as *test results*, ``checkstyle`` projects
+them as *code-review annotations* keyed on a file/line, which is the shape these
+review-side platforms expect for static-analysis output.
 """
 
 from __future__ import annotations
@@ -625,6 +632,138 @@ def to_junit(report: AnalysisReport) -> str:
     return "\n".join(lines)
 
 
+# Checkstyle XML has exactly three severity levels (``error``/``warning``/
+# ``info``). Map omen's five-level taxonomy onto them, mirroring the SARIF/gha
+# intent: critical/high → ``error`` (the red, blocker level every Checkstyle
+# consumer surfaces as a build-failing issue), medium → ``warning`` (the amber
+# default), low/informational → ``info`` (the green/note level Reviewdog and the
+# Jenkins plugin render but do not block on). The original omen severity is
+# preserved verbatim in the ``omen-severity`` attribute on each ``<error>`` so
+# nothing is lost in the projection.
+_SEVERITY_TO_CHECKSTYLE_LEVEL = {
+    Severity.CRITICAL: "error",
+    Severity.HIGH: "error",
+    Severity.MEDIUM: "warning",
+    Severity.LOW: "info",
+    Severity.INFORMATIONAL: "info",
+}
+
+# Checkstyle XML version most consumers (GitLab Code Quality, Reviewdog,
+# Jenkins Checkstyle plugin, SonarQube) accept as the document attribute. The
+# value mirrors what slither/eslint-stylish/most static-analysis emitters use.
+_CHECKSTYLE_VERSION = "8.0"
+
+
+def _checkstyle_location(f: Finding) -> tuple[str, int | None, int | None]:
+    """Extract (file, startLine, endLine) for a finding's Checkstyle ``<error>``.
+
+    Checkstyle is **file-keyed** (every ``<error>`` lives inside a ``<file>``),
+    so a finding with no locatable source must still anchor to *some* file name.
+    We reuse omen's evidence shape — the same ``Contract.sol#start-end`` mapping
+    the SARIF and gha helpers split — with a graceful fallback chain so a
+    bytecode-mode finding (no source mapping) anchors to the contract identifier
+    instead of being silently dropped: source mapping first, then contract, then
+    ``"<unknown>"`` as a last-resort sentinel so the document stays well-formed.
+    """
+    if f.evidence.source_mapping:
+        loc = f.evidence.source_mapping[0]
+        if "#" not in loc:
+            return (loc, None, None)
+        uri, _, span = loc.partition("#")
+        start_s, _, end_s = span.partition("-")
+        try:
+            start = int(start_s)
+        except ValueError:
+            return (uri, None, None)
+        try:
+            end = int(end_s) if end_s else None
+        except ValueError:
+            end = None
+        return (uri, start, end)
+    if f.contract:
+        return (f.contract, None, None)
+    return ("<unknown>", None, None)
+
+
+def _checkstyle_error(f: Finding) -> str:
+    """The XML line for a single finding's Checkstyle ``<error>`` element.
+
+    Carries the projected Checkstyle ``severity`` (error/warning/info), the
+    ``line`` (omitted when there is no source mapping — Checkstyle treats a
+    missing line as "applies to the file as a whole", which is the right shape
+    for a bytecode finding), the finding description as ``message``, the
+    detector identity as ``source`` (the standard Checkstyle convention for the
+    rule that produced the finding), and the original omen severity verbatim in
+    an ``omen-severity`` attribute so the projection is lossless. All attribute
+    values are XML-escaped via ``quoteattr`` so a ``<``/``&``/``"`` in a path
+    or description cannot break the document.
+    """
+    level = _SEVERITY_TO_CHECKSTYLE_LEVEL.get(f.severity, "warning")
+    _, start, _end = _checkstyle_location(f)
+    parts = [f"severity={quoteattr(level)}"]
+    if start is not None:
+        parts.append(f'line="{start}"')
+    message = f.description or f.title
+    # Checkstyle messages are single-line per convention; collapse newlines so
+    # consumers that render them inline (GitLab Code Quality, Reviewdog) don't
+    # break their layout.
+    message = message.replace("\n", " ").replace("\r", " ")
+    parts.append(f"message={quoteattr(message)}")
+    parts.append(f"source={quoteattr(f.detector)}")
+    # Preserve the original omen severity (critical/high/medium/low/
+    # informational) verbatim so no information is lost when the five-level
+    # taxonomy is projected onto Checkstyle's three.
+    parts.append(f"omen-severity={quoteattr(f.severity.value)}")
+    parts.append(f"omen-category={quoteattr(f.category)}")
+    parts.append(f"omen-confidence={quoteattr(f.confidence)}")
+    return f"    <error {' '.join(parts)}/>"
+
+
+def to_checkstyle(report: AnalysisReport) -> str:
+    """Render the report as a Checkstyle XML document.
+
+    POST_V01 R3.7. One ``<checkstyle>`` root containing one ``<file>`` per
+    distinct location (findings sharing a file are grouped, matching the
+    Checkstyle convention every consumer expects), each containing one
+    ``<error>`` per finding in the report's existing worst-first order (the
+    formatter never re-orders or re-filters — a pure formatter over
+    ``report.findings`` like the rest).
+
+    Unlike ``--format junit`` (which projects findings as *test results*, one
+    failing testcase per finding under one suite) ``--format checkstyle``
+    projects them as **code-review annotations** keyed on a file/line, which is
+    the shape GitLab CI's Code Quality widget, Reviewdog, SonarQube, and the
+    Jenkins Checkstyle plugin expect. The two are complementary CI-integration
+    formats — JUnit is the right pick when you want findings in the *tests* tab
+    of any CI; Checkstyle is the right pick when you want them in the *MR/PR
+    code-review diff* of the platforms above.
+
+    A clean report (no findings) emits a valid ``<checkstyle>`` document with no
+    ``<file>`` children — the well-formed "scan ran, found nothing" shape every
+    Checkstyle consumer recognises. All names, attributes, and bodies are
+    XML-escaped via ``xml.sax.saxutils.quoteattr``.
+    """
+    lines: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>']
+    lines.append(f'<checkstyle version="{_CHECKSTYLE_VERSION}">')
+
+    # Group findings by file (the location anchor). Preserve first-seen file
+    # order so the document order mirrors the report's worst-first finding order
+    # — a consumer rendering top-to-bottom sees the worst-affected file first.
+    by_file: dict[str, list[Finding]] = {}
+    for f in report.findings:
+        uri, _, _ = _checkstyle_location(f)
+        by_file.setdefault(uri, []).append(f)
+
+    for uri, findings in by_file.items():
+        lines.append(f"  <file name={quoteattr(uri)}>")
+        for f in findings:
+            lines.append(_checkstyle_error(f))
+        lines.append("  </file>")
+
+    lines.append("</checkstyle>")
+    return "\n".join(lines)
+
+
 def _severity_summary(findings: list[Finding]) -> str:
     """Build a worst-first per-severity count line, e.g. ``2 high, 1 medium``.
 
@@ -729,4 +868,6 @@ def render(
         return to_gha(report)
     if fmt == "junit":
         return to_junit(report)
+    if fmt == "checkstyle":
+        return to_checkstyle(report)
     raise ValueError(f"unknown output format: {fmt}")

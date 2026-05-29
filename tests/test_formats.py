@@ -1,4 +1,4 @@
-"""Output format tests: text, JSON, H1-markdown, SARIF, gha, and junit."""
+"""Output format tests: text, JSON, H1-markdown, SARIF, gha, junit, and checkstyle."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from omen.analyzer import AnalysisReport
 from omen.findings import Evidence, Finding, Severity
 from omen.formats import (
     render,
+    to_checkstyle,
     to_gha,
     to_h1md,
     to_json,
@@ -64,6 +65,7 @@ def test_render_dispatch():
     assert render(_report(), "text").startswith("omen ")
     assert render(_report(), "gha").startswith("::")
     assert render(_report(), "junit").lstrip().startswith("<?xml")
+    assert render(_report(), "checkstyle").lstrip().startswith("<?xml")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -584,3 +586,298 @@ def test_junit_escapes_special_xml_chars():
 
 def test_junit_render_dispatch_matches_to_junit():
     assert render(_source_report(), "junit") == to_junit(_source_report())
+
+
+# --- checkstyle format: Checkstyle XML code-review annotations (R3.7) ------
+
+
+def test_checkstyle_is_well_formed_xml_with_checkstyle_root():
+    xml = to_checkstyle(_source_report())
+    assert xml.startswith("<?xml")
+    root = ET.fromstring(xml)
+    assert root.tag == "checkstyle"
+    # Version attribute carried so downstream consumers (GitLab Code Quality,
+    # Reviewdog, Jenkins, SonarQube) read a recognised document.
+    assert root.get("version")
+
+
+def test_checkstyle_one_error_per_finding_grouped_by_file():
+    # _source_report() has two findings, both anchored to Vuln.sol — they
+    # should be grouped under a single <file>.
+    root = ET.fromstring(to_checkstyle(_source_report()))
+    files = root.findall("file")
+    assert len(files) == 1
+    assert files[0].get("name") == "Vuln.sol"
+    errors = files[0].findall("error")
+    assert len(errors) == 2
+
+
+def test_checkstyle_errors_are_in_report_order_within_a_file():
+    # report order: access-control (high) then tx-origin (medium).
+    root = ET.fromstring(to_checkstyle(_source_report()))
+    errors = root.find("file").findall("error")
+    # source attribute holds the detector identity; verify order via that.
+    assert errors[0].get("source") == "slither:protected-vars"
+    assert errors[1].get("source") == "slither:tx-origin"
+
+
+def test_checkstyle_severity_maps_to_three_levels():
+    # high -> error, medium -> warning. (Critical -> error and low/info -> info
+    # are exercised by the explicit table-mapping test below.)
+    root = ET.fromstring(to_checkstyle(_source_report()))
+    errors = root.find("file").findall("error")
+    by_source = {e.get("source"): e for e in errors}
+    assert by_source["slither:protected-vars"].get("severity") == "error"
+    assert by_source["slither:tx-origin"].get("severity") == "warning"
+
+
+def test_checkstyle_full_severity_mapping_table():
+    # Build one finding per omen severity to lock the projection onto
+    # Checkstyle's three levels: critical/high -> error, medium -> warning,
+    # low/informational -> info.
+    findings: list[Finding] = []
+    for sev in (
+        Severity.CRITICAL,
+        Severity.HIGH,
+        Severity.MEDIUM,
+        Severity.LOW,
+        Severity.INFORMATIONAL,
+    ):
+        findings.append(
+            Finding(
+                category="suicidal",
+                severity=sev,
+                title=f"t-{sev.value}",
+                description=f"d-{sev.value}",
+                detector=f"slither:{sev.value}",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=[f"Vuln.sol#{1}-{2}"]),
+            )
+        )
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["suicidal"],
+        findings=findings,
+    )
+    root = ET.fromstring(to_checkstyle(report))
+    levels = [e.get("severity") for e in root.find("file").findall("error")]
+    assert levels == ["error", "error", "warning", "info", "info"]
+
+
+def test_checkstyle_preserves_original_severity_verbatim():
+    # The five-level omen severity is preserved in the omen-severity attribute
+    # so the three-level Checkstyle projection is lossless.
+    root = ET.fromstring(to_checkstyle(_source_report()))
+    errors = root.find("file").findall("error")
+    by_source = {e.get("source"): e for e in errors}
+    assert by_source["slither:protected-vars"].get("omen-severity") == "high"
+    assert by_source["slither:tx-origin"].get("omen-severity") == "medium"
+    # Category and confidence are also preserved on each <error>.
+    assert by_source["slither:protected-vars"].get("omen-category") == "access-control"
+    assert by_source["slither:protected-vars"].get("omen-confidence") == "high"
+    assert by_source["slither:tx-origin"].get("omen-confidence") == "medium"
+
+
+def test_checkstyle_source_finding_carries_line_and_file():
+    root = ET.fromstring(to_checkstyle(_source_report()))
+    file_node = root.find("file")
+    assert file_node.get("name") == "Vuln.sol"
+    errors = file_node.findall("error")
+    # access-control source mapping is Vuln.sol#12-18 -> line=12 (Checkstyle
+    # has no native endLine attribute; line points to the issue's primary line).
+    ac = next(e for e in errors if e.get("source") == "slither:protected-vars")
+    assert ac.get("line") == "12"
+    tx = next(e for e in errors if e.get("source") == "slither:tx-origin")
+    assert tx.get("line") == "25"
+
+
+def test_checkstyle_carries_message_from_description():
+    root = ET.fromstring(to_checkstyle(_source_report()))
+    errors = root.find("file").findall("error")
+    by_source = {e.get("source"): e for e in errors}
+    assert by_source["slither:protected-vars"].get("message") == "missing onlyOwner guard"
+
+
+def test_checkstyle_bytecode_finding_anchors_to_contract_with_no_line():
+    # The default _report() is a bytecode finding (opcodes, no source mapping)
+    # whose contract identifier is "0xabc". Checkstyle is file-keyed, so the
+    # finding must anchor to *some* file — we use the contract address as the
+    # file name and omit the line attribute (a bytecode finding has no line).
+    root = ET.fromstring(to_checkstyle(_report()))
+    files = root.findall("file")
+    assert len(files) == 1
+    assert files[0].get("name") == "0xabc"
+    error = files[0].find("error")
+    # No source mapping => no line attribute.
+    assert error.get("line") is None
+    # Severity still projects (high -> error).
+    assert error.get("severity") == "error"
+    # And the original omen severity is still preserved verbatim.
+    assert error.get("omen-severity") == "high"
+
+
+def test_checkstyle_findings_in_different_files_get_separate_file_elements():
+    # Two findings, two source files -> two <file> elements, one <error> in each.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="<project>",
+        checks=["all"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:suicidal",
+                contract="A",
+                confidence="high",
+                evidence=Evidence(source_mapping=["A.sol#1-2"]),
+            ),
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:reentrancy-eth",
+                contract="B",
+                confidence="high",
+                evidence=Evidence(source_mapping=["B.sol#5-6"]),
+            ),
+        ],
+    )
+    root = ET.fromstring(to_checkstyle(report))
+    file_names = [f.get("name") for f in root.findall("file")]
+    assert file_names == ["A.sol", "B.sol"]
+    for file_node in root.findall("file"):
+        assert len(file_node.findall("error")) == 1
+
+
+def test_checkstyle_multiple_findings_same_file_share_one_file_element():
+    # Same file, two findings -> one <file> with two <error> children (the
+    # standard Checkstyle grouping convention every consumer expects).
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["all"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t1",
+                description="d1",
+                detector="slither:suicidal",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#10-12"]),
+            ),
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t2",
+                description="d2",
+                detector="slither:reentrancy-eth",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#30-35"]),
+            ),
+        ],
+    )
+    root = ET.fromstring(to_checkstyle(report))
+    files = root.findall("file")
+    assert len(files) == 1
+    assert files[0].get("name") == "Vuln.sol"
+    assert len(files[0].findall("error")) == 2
+
+
+def test_checkstyle_empty_report_is_a_valid_document_with_no_files():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    xml = to_checkstyle(report)
+    root = ET.fromstring(xml)
+    assert root.tag == "checkstyle"
+    # No findings -> no <file> children. The document is still well-formed:
+    # every Checkstyle consumer reads "scan ran, found nothing" from this shape.
+    assert root.findall("file") == []
+
+
+def test_checkstyle_escapes_special_xml_chars():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["reentrancy"],
+        findings=[
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description='use <SafeMath> & "guards" not raw a < b',
+                detector="slither:reentrancy-eth",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["A&B.sol#1-2"]),
+            )
+        ],
+    )
+    xml = to_checkstyle(report)
+    # Raw special chars from the content must not appear unescaped in the doc.
+    assert "<SafeMath>" not in xml
+    # The bare ampersand must be escaped (no naked "A&B.sol" as an attr value).
+    assert 'name="A&B.sol"' not in xml
+    # Still parses as well-formed XML and round-trips the content.
+    root = ET.fromstring(xml)
+    file_node = root.find("file")
+    assert file_node.get("name") == "A&B.sol"
+    error = file_node.find("error")
+    assert "<SafeMath>" in error.get("message")
+    assert '"guards"' in error.get("message")
+
+
+def test_checkstyle_collapses_newlines_in_message():
+    # Checkstyle messages are conventionally single-line; a multi-line omen
+    # description must not break the attribute layout for consumers that render
+    # the message inline (GitLab Code Quality, Reviewdog).
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["reentrancy"],
+        findings=[
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description="line one\nline two\r\nline three",
+                detector="slither:reentrancy-eth",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#1-2"]),
+            )
+        ],
+    )
+    xml = to_checkstyle(report)
+    root = ET.fromstring(xml)
+    message = root.find("file").find("error").get("message")
+    assert "\n" not in message
+    assert "\r" not in message
+    assert "line one" in message and "line three" in message
+
+
+def test_checkstyle_render_dispatch_matches_to_checkstyle():
+    assert render(_source_report(), "checkstyle") == to_checkstyle(_source_report())
