@@ -115,6 +115,12 @@ omen [--config PATH] \
      [--fail-on {never,informational,low,medium,high,critical}] \
      [-o/--output-file PATH]
 
+omen --batch <dir-or-list-file> \
+     --input-type {sol,address} \
+     [--ignore PATTERN[,PATTERN...]]   # skip vendored/third-party paths \
+     [--check ...] [--rpc-url URL] [--min-confidence ...] [--min-severity ...] \
+     [--sort ...] [--limit N] [--fail-on ...] [-o/--output-file PATH]
+
 omen --list-checks [--format {text,json}]
 ```
 
@@ -131,6 +137,7 @@ omen --list-checks [--format {text,json}]
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
 - `-o` / `--output-file` — write the report to `PATH` instead of stdout. Default: stdout (the historical behaviour). Composes with every `--format`: in single-contract mode the file gets the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch` mode it gets the JSONL stream (one JSON object per contract). The write is **atomic** — content goes to a sibling `.tmp` and is renamed into place — so a crash mid-write never clobbers a previously good report with a truncated one. Parent directories are created as needed. The `--fail-on` exit code is unaffected: the gate trips the same whether the report went to a file or stdout. See [Writing the report to a file](#writing-the-report-to-a-file).
+- `--ignore` — in `--batch` mode, skip contract paths/addresses matching any of these comma-separated [glob](https://docs.python.org/3/library/fnmatch.html) patterns. A pattern matches the full path, any single path component, or — when it contains a `/` — any sub-path, so `--ignore node_modules,lib,test` drops vendored/third-party trees (e.g. an OpenZeppelin import tree) from a recursive directory scan or a list file without hand-pruning the input. Globs support `*`, `?`, and `[seq]`. Ignored items produce no output and no error. Default: ignore nothing. No effect in single `--contract` mode. See [Excluding paths from a batch scan](#excluding-paths-from-a-batch-scan).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Scoping a scan to specific classes
@@ -206,6 +213,48 @@ Resolution rules:
 
 The surviving set composes with everything downstream exactly as `--check`
 does, and in `--batch` mode the same exclusion applies to every contract.
+
+### Excluding paths from a batch scan
+
+Where `--check`/`--exclude-check` scope a scan by *vulnerability class*,
+`--ignore` scopes a `--batch` scan by *path*. Point omen at a whole repository
+and most of what a recursive `.sol` walk finds is vendored or third-party —
+`node_modules`, a Foundry `lib/` tree, OpenZeppelin imports, mocks under
+`test/`. Those are not your attack surface, and analyzing them wastes time and
+floods the JSONL stream. `--ignore` drops them up front:
+
+```bash
+# scan a repo but skip vendored deps and test scaffolding
+omen --batch ./contracts --input-type sol \
+     --ignore node_modules,lib,test
+```
+
+`--ignore` takes a comma-separated list of
+[`fnmatch`](https://docs.python.org/3/library/fnmatch.html) glob patterns and
+matches each candidate three ways, so the common cases need no boilerplate:
+
+- **a single path component** — `node_modules` excludes
+  `contracts/node_modules/Foo.sol` (no `*/…/*` wrapping needed);
+- **the full path as a glob** — `*.t.sol` excludes every Foundry test file;
+- **a sub-path** (any pattern containing `/`) — `lib/openzeppelin` excludes
+  `contracts/lib/openzeppelin/ERC20.sol`.
+
+Globs support `*`, `?`, and `[seq]`. A path is skipped if it matches **any**
+pattern (OR semantics). The filter runs over both `--batch` input shapes — a
+directory's recursive `.sol` walk and a newline-delimited list file (of paths
+*or* addresses) — and an ignored item produces no JSONL line and no error, so
+the exit code reflects only the contracts that were actually scanned.
+
+Notes:
+
+- `--ignore` has **no effect in single `--contract` mode** (there is one
+  explicit target, nothing to filter). It is accepted there as a no-op so a
+  committed `omen.toml` carrying `ignore = "…"` still works for single scans.
+- An `--ignore` value with no usable patterns (e.g. `--ignore ,,`) is a usage
+  error (exit code `2`) rather than a silent no-op — it almost always means a
+  typo where a pattern was intended.
+- Like every other flag, `ignore` can be set in `omen.toml` (as a comma-list
+  string) and overridden on the command line.
 
 ### Listing the detection classes
 
@@ -684,8 +733,8 @@ The contract is deliberately small and predictable:
 - **Keys are flag names** with the leading `--` dropped; dashes and underscores
   are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
   the short alias for `output-file`. Settable keys: `contract`, `batch`,
-  `input-type`, `check`, `exclude-check`, `rpc-url`, `format`, `min-confidence`,
-  `min-severity`, `sort`, `limit`, `fail-on`, `output-file`.
+  `input-type`, `check`, `exclude-check`, `ignore`, `rpc-url`, `format`,
+  `min-confidence`, `min-severity`, `sort`, `limit`, `fail-on`, `output-file`.
 - **Values are validated** against the same choices the CLI enforces, so a typo
   in the file is caught at load time with a clear, file-named error (exit `2`),
   not silently fed into the analyzer.

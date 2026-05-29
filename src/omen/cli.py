@@ -312,6 +312,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ignore",
+        default=None,
+        metavar="PATTERN[,PATTERN...]",
+        help=(
+            "in --batch mode, skip contract paths/addresses matching any of "
+            "these comma-separated glob patterns (POST_V01 R2.11). A pattern "
+            "matches the full path, any single path component, or — when it "
+            "contains a '/' — any sub-path, so '--ignore node_modules,lib,test' "
+            "drops vendored/third-party trees (e.g. an OpenZeppelin import tree) "
+            "from a recursive directory scan or a list file without hand-pruning "
+            "the input. Globs support *, ?, and [seq]. Ignored items produce no "
+            "output and no error. No effect in single --contract mode."
+        ),
+    )
+    parser.add_argument(
         "--fail-on",
         default="never",
         choices=["never", "informational", "low", "medium", "high", "critical"],
@@ -387,6 +402,19 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    # Validate --ignore up front (POST_V01 R2.11): it is a comma-separated glob
+    # list, so argparse cannot enforce it. parse_ignore rejects an all-blank
+    # value; surface that as a usage error (exit 2) rather than a runtime crash.
+    # --ignore only affects --batch input selection; flag it as a no-op (not an
+    # error) under --contract so a committed omen.toml carrying it still works
+    # for single scans.
+    from .batch import parse_ignore
+
+    try:
+        parse_ignore(args.ignore)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     # --- Batch mode ---
     if args.batch is not None:
         from .batch import run_batch
@@ -403,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
             fail_on=args.fail_on,
             exclude_check=args.exclude_check,
             output_file=args.output_file,
+            ignore=args.ignore,
         )
 
     # --- Single-contract mode ---
