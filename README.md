@@ -110,6 +110,7 @@ omen [--config PATH] \
      [--format {json,text,h1md,sarif}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
+     [--severity-override CATEGORY=SEVERITY[,...]]   # org-specific risk tuning \
      [--sort {severity,none}] \
      [--limit N] \
      [--fail-on {never,informational,low,medium,high,critical}] \
@@ -120,6 +121,7 @@ omen --batch <dir-or-list-file> \
      [--ignore PATTERN[,PATTERN...]]   # skip vendored/third-party paths \
      [--batch-summary]                 # aggregate roll-up to stderr after the JSONL \
      [--check ...] [--rpc-url URL] [--min-confidence ...] [--min-severity ...] \
+     [--severity-override CATEGORY=SEVERITY[,...]] \
      [--sort ...] [--limit N] [--fail-on ...] [-o/--output-file PATH]
 
 omen --list-checks [--format {text,json}]
@@ -134,6 +136,7 @@ omen --list-checks [--format {text,json}]
 - `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
+- `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
@@ -491,6 +494,39 @@ confidence threshold to survive. Like the confidence filter, severity filtering
 runs after analysis (so `finding_count` always matches what you see) and
 applies in every output format and in `--batch` mode.
 
+### Overriding severity per class
+
+omen ships a built-in default severity for each detection class, and in source
+mode it inherits Slither's per-finding impact. Your organization may rank a
+class differently: a DeFi team that has been burned by reentrancy may treat
+**every** reentrancy lead as `critical`; a team scanning a large monorepo may
+demote the noisy bytecode `greedy` heuristic to `informational` so it falls out
+of a `--min-severity low` triage pass. `--severity-override` is that lever — a
+comma-separated list of `CATEGORY=SEVERITY` pairs that re-stamps the severity
+omen reports for the named classes:
+
+```bash
+# treat any reentrancy or tx.origin lead as our top tier
+omen --contract Vault.sol --input-type sol \
+     --check all --severity-override reentrancy=critical,tx-origin=high
+
+# demote a noisy class so a low-severity triage pass drops it
+omen --batch contracts/ --input-type sol \
+     --check all --severity-override greedy=informational --min-severity low
+```
+
+The override is applied **before** the rest of the pipeline — `--min-severity`,
+`--sort`, `--limit`, and `--fail-on` all act on the tuned severity. That makes
+it compose cleanly: pinning `tx-origin=high` both surfaces it under
+`--min-severity high` *and* trips a `--fail-on high` CI gate, while pinning a
+class down lets `--min-severity` filter it out as noise. Only the severity
+changes — the finding's category, confidence, evidence, and detector id are
+preserved, so every override stays fully traceable. Unknown categories or
+severities are rejected as a usage error (exit `2`). The setting applies in
+single-contract and `--batch` mode and can be committed to `omen.toml` as
+`severity_override = "reentrancy=critical"`; an explicit CLI flag overrides the
+file as usual.
+
 ### Sorting findings
 
 Once the filters narrow a scan down, you still read the report top-down. By
@@ -781,13 +817,14 @@ The contract is deliberately small and predictable:
 - **Flat name→value map.** All keys live at the top level *or* under an `[omen]`
   table (both accepted; when an `[omen]` table is present its keys are used, so
   `omen.toml` can also be a section inside a shared config without bleed-through).
-  No nested sub-tables, no profiles, no per-category overrides.
+  No nested sub-tables, no profiles. (Per-class severity tuning is still
+  available — as the flat `severity-override` string key, not a sub-table.)
 - **Keys are flag names** with the leading `--` dropped; dashes and underscores
   are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
   the short alias for `output-file`. Settable keys: `contract`, `batch`,
   `input-type`, `check`, `exclude-check`, `ignore`, `batch-summary`, `rpc-url`,
-  `format`, `min-confidence`, `min-severity`, `sort`, `limit`, `fail-on`,
-  `output-file`.
+  `format`, `min-confidence`, `min-severity`, `severity-override`, `sort`,
+  `limit`, `fail-on`, `output-file`.
 - **Values are validated** against the same choices the CLI enforces, so a typo
   in the file is caught at load time with a clear, file-named error (exit `2`),
   not silently fed into the analyzer.
