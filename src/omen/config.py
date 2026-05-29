@@ -83,7 +83,11 @@ _INT_KEYS = frozenset({"limit", "parallel"})
 # counts above — so a fractional file value like ``timeout = 2.5`` is accepted;
 # TOML ints (``timeout = 30``) are also accepted and coerced to float.
 _FLOAT_KEYS = frozenset({"timeout"})
-_PATH_KEYS = frozenset({"output_file"})
+# ``output_file`` and ``baseline`` are path strings. ``baseline`` (POST_V01) is
+# the known-good omen report whose findings a scan suppresses, so a committed
+# omen.toml carrying ``baseline = "omen-baseline.json"`` makes "fail only on new
+# findings" the default for every CI invocation.
+_PATH_KEYS = frozenset({"output_file", "baseline"})
 
 # ``batch_summary`` is a boolean flag (the --batch-summary store_true option,
 # POST_V01 R2.12). TOML true/false arrive as Python bool, so the file form is

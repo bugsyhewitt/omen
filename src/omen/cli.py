@@ -355,6 +355,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--baseline",
+        default=None,
+        metavar="PATH",
+        help=(
+            "suppress findings already present in PATH — a previously-saved omen "
+            "JSON report (a single-contract report, or one line / the whole JSONL "
+            "stream of a --batch run) used as a known-good baseline (POST_V01). "
+            "Only findings *new* relative to the baseline appear in the report, "
+            "count toward the totals, and trip the --fail-on gate. This is the "
+            "'adopt omen on a legacy codebase' CI move: capture today's findings "
+            "with `omen ... -o baseline.json`, commit it, then run with "
+            "`--baseline baseline.json --fail-on high` so the pipeline fails only "
+            "on issues introduced after the baseline. A finding's identity is its "
+            "category + detector + contract + location (severity/wording changes "
+            "do not make a known finding look new). Applies in single and --batch "
+            "mode; a missing/unreadable/non-JSON baseline is a usage error."
+        ),
+    )
+    parser.add_argument(
         "--ignore",
         default=None,
         metavar="PATTERN[,PATTERN...]",
@@ -519,6 +538,20 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    # Validate --baseline up front (POST_V01): load the baseline report now so a
+    # missing/unreadable/non-JSON file is surfaced as a usage error (exit 2)
+    # before any compiler/network work, consistent with the other up-front
+    # validations above. The parsed fingerprint set is recomputed inside analyze
+    # (it is cheap and keeps analyze a self-contained entry point); this call is
+    # purely the early validation gate.
+    if args.baseline is not None:
+        from .findings import load_baseline_fingerprints
+
+        try:
+            load_baseline_fingerprints(args.baseline)
+        except ValueError as exc:
+            parser.error(str(exc))
+
     # --- Batch mode ---
     if args.batch is not None:
         from .batch import run_batch
@@ -540,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
             severity_override=args.severity_override,
             parallel=args.parallel,
             timeout=args.timeout,
+            baseline=args.baseline,
         )
 
     # --- Single-contract mode ---
@@ -563,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
             fail_on=args.fail_on,
             exclude_check=args.exclude_check,
             severity_override=args.severity_override,
+            baseline=args.baseline,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)

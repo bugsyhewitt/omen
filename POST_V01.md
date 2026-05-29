@@ -1134,3 +1134,84 @@ land.
 > declared complete; remaining un-ranked candidates noted during the R18 lap
 > include per-category severity overrides, `--timeout` per-check execution
 > isolation, and `--quiet`.
+
+---
+
+## Rotation 3 additions
+
+### R3.1. `--baseline` known-good finding suppression
+
+**Rank: 1 (Rotation 3) — adopt-on-a-legacy-codebase CI lever**
+
+> **STATUS: ✅ IMPLEMENTED (R24, 2026-05-29).** `--baseline PATH` suppresses
+> findings already present in a previously-saved omen JSON report (a
+> single-contract report, or one line / the whole JSONL stream of a `--batch`
+> run), so only findings *new* relative to the baseline appear in the report,
+> count toward `total_findings`, and trip the `--fail-on` gate. This is the
+> standard "triage / baseline" lever every mature scanner ships (Slither
+> `--triage-mode`, semgrep `--baseline`, trivy `.trivyignore`): the first run of
+> a scanner on an existing codebase lights up red on every pre-existing finding,
+> so the `--fail-on` gate (R2.5) is unusable until a team can say "fail only on
+> findings introduced *after* this point." A finding's identity for matching is a
+> stable fingerprint — **category + detector + contract + location** (the source
+> line range in source mode, the opcode offset in bytecode/address mode) —
+> deliberately *excluding* severity, confidence, title, and description, so a
+> `--severity-override` (R21) re-stamp or a Slither release rewording a detector
+> message does not make a known finding look new. Built the same zero-dependency,
+> pure-primitive way as the rest of the triage surface: `finding_fingerprint()`
+> (accepts a live `Finding` or its `to_dict()` form so a live finding and one
+> read from a baseline file compute the same fingerprint), `load_baseline_
+> fingerprints()` (permissive loader: single JSON report object, a JSON array of
+> them, or a JSONL batch stream; an empty/clean baseline is valid and suppresses
+> nothing; a missing/unreadable/non-JSON file raises `ValueError`), and
+> `suppress_baseline()` (drops findings whose fingerprint is in the set; `None`/
+> empty is a no-op) — all in `findings.py`. Wired through `analyze` (a `baseline`
+> param; suppression runs *after* `apply_severity_overrides` so an override still
+> applies to surviving findings, and *before* the `--min-severity`/
+> `--min-confidence` filters, `--sort`, `--limit`, and the `--fail-on` gate, so a
+> baselined finding never appears, never counts, never gates), `run_batch`/
+> `_analyze_one` (forwarded per item, so a whole-program batch fails only on new
+> findings; a batch baseline is naturally the JSONL output of a previous batch
+> run), and the CLI (`--baseline PATH`, validated up front so a broken baseline
+> is an exit-`2` usage error before any compiler/network work, consistent with
+> the `--check`/`--ignore`/`--severity-override` validations). `config.py` gains
+> `baseline` as a `_PATH_KEYS` member, so a committed `omen.toml` carrying
+> `baseline = "omen-baseline.json"` makes "fail only on new findings" the default
+> for every invocation. Tests in `tests/test_baseline.py` (33 cases:
+> fingerprint — source/bytecode location, order-insensitivity, ignores
+> severity/confidence/wording, distinguishes category/location/detector, dict vs
+> object symmetry; loader — single report, JSONL stream, JSON array, empty
+> findings, empty file, non-dict skip, missing-file raise, non-JSON raise;
+> suppress — None/empty no-op, drops-baselined-keeps-new, drops-all; analyze
+> integration (bytecode, no solc) — no-baseline keeps all, self-baseline
+> suppresses everything, suppresses only known finding, suppresses *before* the
+> `--fail-on` gate, new finding still trips the gate, survives a
+> `--severity-override`; CLI — help, parse/default, missing/non-JSON usage error;
+> config — `baseline` accepted / non-string rejected; subprocess end-to-end —
+> capture baseline then re-scan unchanged code with `--baseline --fail-on high`
+> exits 0 with zero findings). README gains a "Suppressing known findings with a
+> baseline" section plus usage-block, flag-list, and config-key mentions. Pure
+> filter-pipeline change — no detector, analysis-path, or format change, and the
+> loader imports only stdlib `json`, so it runs offline / in CI / on a fresh
+> checkout with no compiler installed.
+>
+> **Why (R24 research-lap reasoning):** Rotation 2 exhausted the per-contract
+> triage surface (R2.1–R2.10) and the batch axes (input selection R2.11/R2.8,
+> aggregate roll-up R2.12, throughput R2.13 `--parallel`, per-contract budget
+> R2.14 `--timeout`), and R21 added org-specific severity tuning
+> (`--severity-override`). What none of those addressed is the *temporal* axis:
+> every prior lever filters/orders/caps/gates a *single* scan in isolation, with
+> no notion of "what changed since last time." That gap is precisely what blocks
+> the highest-value workflow the `--fail-on` gate (R2.5) was built for —
+> failing CI on findings — from being usable on any codebase that isn't
+> greenfield. A scanner that can only say "there are 47 findings" cannot be wired
+> into a PR gate on a legacy contract; one that can say "there is 1 finding *new*
+> in this PR" can. `--baseline` is the canonical fix, present in every comparable
+> tool, and it fits omen's architecture cleanly: it is one more pure primitive in
+> `findings.py` and one more parameter on the existing `analyze`/`run_batch`
+> seam, adding no dependency and touching no detector or format. The remaining
+> un-shipped candidates after R24 are `--quiet` (still near-vacuous — omen prints
+> only the report to stdout) and `--timeout` Slither *subprocess* isolation
+> (still violates the Anti-Abstraction / Simplicity gates; the R2.14 batch
+> `--timeout` already bounds the per-item *wait*, which is the bounty-workflow
+> value).
