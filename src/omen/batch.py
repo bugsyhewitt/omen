@@ -68,6 +68,7 @@ def run_batch(
     limit: int | str | None = None,
     fail_on: str | None = None,
     exclude_check: str | None = None,
+    output_file: str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -91,11 +92,20 @@ def run_batch(
     forwarded to ``analyze`` for each item, so the same categories are removed
     from the ``--check`` set uniformly across the batch.
 
+    *output_file* (POST_V01 Rotation 2, R2.9) redirects the JSONL stream to a
+    file instead of stdout. When None (the default) lines are streamed to stdout
+    as they are produced — the historical behaviour, unchanged. When a path is
+    given the lines are buffered and written atomically at the end via
+    ``cli.write_output`` (a sibling .tmp renamed into place), so a crash partway
+    through a large batch never leaves a half-written report file in place of a
+    previously good one. Per-item errors still go to stderr regardless.
+
     Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
     tripped on any item; otherwise 0.
     """
     any_error = False
     gate_tripped = False
+    buffered: list[str] = []
 
     for item in _iter_items(path, input_type):
         try:
@@ -122,7 +132,16 @@ def run_batch(
 
         if report.gate_triggered:
             gate_tripped = True
-        print(json.dumps(report.to_dict()))
+        line = json.dumps(report.to_dict())
+        if output_file is None:
+            print(line)
+        else:
+            buffered.append(line)
+
+    if output_file is not None:
+        from .cli import write_output
+
+        write_output("\n".join(buffered), output_file)
 
     if any_error:
         return 1

@@ -8,12 +8,14 @@
          [--min-severity {informational,low,medium,high,critical}]
          [--sort {severity,none}] [--limit N]
          [--fail-on {never,informational,low,medium,high,critical}]
+         [-o/--output-file PATH]
 
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--sort {severity,none}] [--limit N]
          [--fail-on {never,informational,low,medium,high,critical}]
+         [-o/--output-file PATH]
 
 Text in, text out. JSON is the default machine-readable format.
 Batch mode always emits JSONL (one JSON object per contract).
@@ -28,9 +30,31 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 
 from . import CATEGORIES, __version__
+
+
+def write_output(text: str, output_file: str | None) -> None:
+    """Emit *text* to *output_file*, or to stdout when *output_file* is None.
+
+    When a path is given the write is atomic: the content goes to a sibling
+    ``<name>.tmp`` first and is then ``os.replace``-d into place, so a crash
+    mid-write (or a half-finished batch stream) never clobbers a previously
+    good report with a truncated one. Parent directories are created on demand.
+    A trailing newline is appended (matching ``print``) so the file ends cleanly.
+    """
+    if output_file is None:
+        print(text)
+        return
+    path = Path(output_file)
+    if path.parent and not path.parent.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _positive_int(value: str) -> int:
@@ -191,6 +215,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "-o",
+        "--output-file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "write the report to PATH instead of stdout (default: stdout). "
+            "Composes with every --format: in single-contract mode PATH gets "
+            "the rendered json/text/h1md/sarif report; in --batch mode PATH "
+            "gets the JSONL stream (one JSON object per contract). The file is "
+            "written atomically (a sibling .tmp is renamed into place) so a "
+            "partial report never overwrites a good one if the scan crashes "
+            "mid-write. Parent directories are created as needed. The --fail-on "
+            "exit code is unaffected — the gate trips the same whether the "
+            "report went to a file or stdout."
+        ),
+    )
+    parser.add_argument(
         "--fail-on",
         default="never",
         choices=["never", "informational", "low", "medium", "high", "critical"],
@@ -267,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             fail_on=args.fail_on,
             exclude_check=args.exclude_check,
+            output_file=args.output_file,
         )
 
     # --- Single-contract mode ---
@@ -297,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"omen: analysis failed: {exc}", file=sys.stderr)
         return 1
 
-    print(render(report, args.format))
+    write_output(render(report, args.format), args.output_file)
 
     # Exit code convention: 0 = ran cleanly. Findings still mean a clean run;
     # callers parse the JSON to act on findings. (Bounty workflows want the
