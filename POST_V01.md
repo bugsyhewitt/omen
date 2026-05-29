@@ -709,12 +709,69 @@ land.
 
 ---
 
-> **Rotation 2 status (as of R16, 2026-05-29).** R2.1–R2.8 shipped. The Rotation 2
+### R2.9. `-o` / `--output-file` report destination
+
+**Rank: 9 (Rotation 2) — zero-dependency report destination redirect**
+
+> **STATUS: ✅ IMPLEMENTED (R17, 2026-05-29).** `-o` / `--output-file PATH` writes
+> the rendered report straight to `PATH` instead of stdout. Default is unchanged
+> (stdout). It composes with **every** `--format`: in single-contract mode the
+> file receives the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch`
+> mode it receives the JSONL stream (one JSON object per contract). The write is
+> **atomic** — content is written to a sibling `PATH.tmp` and `os.replace`-d into
+> place — so a crash mid-write (or a half-produced batch stream) never clobbers a
+> previously good report with a truncated one; parent directories are created on
+> demand. The redirect changes only the *destination*: the file content is
+> byte-for-byte what the same invocation prints to stdout (tests assert this
+> equality). The `--fail-on` exit code is orthogonal — the gate still trips
+> (exit `3`) and the report is still written to the file first, so a CI step can
+> both fail the build and archive the report artifact in one run. Implemented as
+> a small `write_output(text, output_file)` helper in `cli.py` (stdout when
+> `None`, atomic file write otherwise) used by single-contract mode; `run_batch()`
+> gained an `output_file` parameter that buffers the JSONL lines and flushes them
+> through the same helper at the end (streaming to stdout, line by line, remains
+> the default behaviour when no path is given). Tests in
+> `tests/test_output_file.py` (write_output primitive: stdout fallback, trailing
+> newline, atomicity/no leftover `.tmp`, parent-dir creation, overwrite; CLI
+> surface: help text, default `None`, short and long flag parsing; single-mode
+> main(): writes to file not stdout, file matches stdout byte-for-byte, composes
+> with `--format text`/`sarif`, `--fail-on` exit code unchanged; batch forwarding:
+> JSONL to file, default still streams stdout, gate exit preserved; end-to-end
+> subprocess writing a real file). README "Writing the report to a file" section
+> documents it; the usage block and flag list mention it. Pure plumbing change —
+> no analysis-path, detector, format, or dependency changes (stdlib `os`/`pathlib`
+> only), so it runs offline / in CI / on a fresh checkout with no compiler.
+>
+> **Why (R17 research-lap reasoning):** R2.1–R2.8 built the full *output* pipeline
+> (list → filter → sort → cap → gate → render) and closed the `--check` *input*
+> axis from both directions. The one axis the pipeline never touched is the
+> report's *destination* — every prior flag shapes *what* the report contains or
+> *how* it reads; none controls *where* it goes. The candidates flagged for this
+> lap were `-o/--output-file`, `--config`, `--timeout`, and `--quiet`. `--quiet`
+> is nearly a no-op (omen prints only the report to stdout — there is no
+> informational chatter to suppress). `--timeout` needs per-check execution
+> isolation that Slither does not cleanly expose. `--config` (a `.omenrc`/YAML/TOML
+> default-flags file) is the largest lift — it touches every flag, needs a parser
+> and precedence rules, and risks the Simplicity Gate (future-proofing against a
+> problem omen does not yet have). `-o/--output-file` is the cheapest,
+> highest-value-per-token move: it composes with all four output formats and both
+> scan modes, adds no module and no dependency, is fully backward compatible
+> (omitting it is the historical stdout behaviour), and closes the last untouched
+> pipeline axis. The atomic-write detail is the one piece of real engineering —
+> it makes the flag safe to point at a long-lived artifact path in CI without the
+> "scan crashed and left me a truncated SARIF" failure mode. `--config` remains
+> the leading remaining candidate for a future lap.
+
+---
+
+> **Rotation 2 status (as of R17, 2026-05-29).** R2.1–R2.9 shipped. The Rotation 2
 > theme has been the triage/UX surface around the now-ten-class detector roster:
 > R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →
-> human-readable render) and R2.7–R2.8 closed the *input* axis from both
-> directions — scope a scan *to* a comma-list of classes (`--check`) or *exclude*
-> a comma-list from it (`--exclude-check`). A fresh full threat-landscape re-scan
-> + re-ranking is still owed before Rotation 2 is declared complete; remaining
-> un-ranked candidates noted during the R16 lap include per-category severity
-> overrides and a config-file (`.omenrc`) form of the now-many CLI flags.
+> human-readable render), R2.7–R2.8 closed the *input* axis from both directions
+> — scope a scan *to* a comma-list of classes (`--check`) or *exclude* a comma-list
+> from it (`--exclude-check`) — and R2.9 closed the *destination* axis (`-o` /
+> `--output-file` writes the report to a file, atomically, in any format and in
+> batch mode). A fresh full threat-landscape re-scan + re-ranking is still owed
+> before Rotation 2 is declared complete; remaining un-ranked candidates noted
+> during the R17 lap include per-category severity overrides and a config-file
+> (`.omenrc`) form of the now-many CLI flags (the leading next candidate).

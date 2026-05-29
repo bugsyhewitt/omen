@@ -111,7 +111,8 @@ omen --contract <path-or-address> \
      [--min-severity {informational,low,medium,high,critical}] \
      [--sort {severity,none}] \
      [--limit N] \
-     [--fail-on {never,informational,low,medium,high,critical}]
+     [--fail-on {never,informational,low,medium,high,critical}] \
+     [-o/--output-file PATH]
 
 omen --list-checks [--format {text,json}]
 ```
@@ -127,6 +128,7 @@ omen --list-checks [--format {text,json}]
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
+- `-o` / `--output-file` — write the report to `PATH` instead of stdout. Default: stdout (the historical behaviour). Composes with every `--format`: in single-contract mode the file gets the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch` mode it gets the JSONL stream (one JSON object per contract). The write is **atomic** — content goes to a sibling `.tmp` and is renamed into place — so a crash mid-write never clobbers a previously good report with a truncated one. Parent directories are created as needed. The `--fail-on` exit code is unaffected: the gate trips the same whether the report went to a file or stdout. See [Writing the report to a file](#writing-the-report-to-a-file).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Scoping a scan to specific classes
@@ -605,6 +607,41 @@ A GitHub Actions step that should block the PR on a high-severity lead:
 
 ```yaml
 - run: omen --contract MyContract.sol --input-type sol --check all --fail-on high
+```
+
+### Writing the report to a file
+
+By default omen prints the report to stdout, which composes naturally with
+shell redirection. `-o` / `--output-file PATH` is the explicit form: omen writes
+the rendered report straight to `PATH` and prints nothing to stdout.
+
+```bash
+# write the JSON report to a file instead of stdout
+omen --contract Token.sol --input-type sol --check all -o report.json
+
+# composes with every --format — e.g. a SARIF log for code scanning upload
+omen --contract Token.sol --input-type sol --check all --format sarif -o omen.sarif
+
+# in --batch mode the JSONL stream goes to the file, one object per contract
+omen --batch contracts/ --input-type sol --check all -o scan.jsonl
+
+# parent directories are created on demand
+omen --contract Token.sol --input-type sol --check all -o reports/2026/token.json
+```
+
+The write is **atomic**: content is written to a sibling `PATH.tmp` and then
+renamed into place, so a crash partway through a long scan (or a large batch)
+never overwrites a previously good report with a half-written one. The redirect
+changes only the *destination* — the file content is byte-for-byte what the same
+invocation would have printed to stdout, in whatever `--format` was selected.
+
+`-o` is orthogonal to the exit-code conventions: a `--fail-on` gate still trips
+(exit `3`) and the report is still written to the file before the process exits,
+so a CI step can both fail the build and archive the report artifact in one run.
+
+```yaml
+# fail the PR on a high lead AND save the SARIF artifact for code scanning
+- run: omen --contract MyContract.sol --input-type sol --check all --fail-on high --format sarif -o omen.sarif
 ```
 
 ---
