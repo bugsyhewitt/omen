@@ -77,6 +77,12 @@ _CHOICE_KEYS: dict[str, tuple[str, ...]] = {
 # Listed here so they are recognised keys; their type is validated below.
 # (``parallel`` is the --batch concurrency worker count, POST_V01.)
 _INT_KEYS = frozenset({"limit", "parallel"})
+
+# ``timeout`` is a positive, finite number of seconds (the --batch per-contract
+# wall-clock budget, POST_V01 R2.14). It is a float key — distinct from the int
+# counts above — so a fractional file value like ``timeout = 2.5`` is accepted;
+# TOML ints (``timeout = 30``) are also accepted and coerced to float.
+_FLOAT_KEYS = frozenset({"timeout"})
 _PATH_KEYS = frozenset({"output_file"})
 
 # ``batch_summary`` is a boolean flag (the --batch-summary store_true option,
@@ -86,7 +92,12 @@ _BOOL_KEYS = frozenset({"batch_summary"})
 
 # Every key a config file may legally contain (canonical underscore form).
 _KNOWN_KEYS = (
-    _STR_KEYS | set(_CHOICE_KEYS) | _INT_KEYS | _PATH_KEYS | _BOOL_KEYS
+    _STR_KEYS
+    | set(_CHOICE_KEYS)
+    | _INT_KEYS
+    | _FLOAT_KEYS
+    | _PATH_KEYS
+    | _BOOL_KEYS
 )
 
 # Convenience aliases accepted in the file → canonical key. ``o`` mirrors the
@@ -188,6 +199,26 @@ def _validate_value(path: str, key: str, value: Any) -> Any:
                 f"got {value}"
             )
         return value
+
+    if key in _FLOAT_KEYS:
+        # TOML floats arrive as float and TOML ints as int; accept either (so
+        # both ``timeout = 2.5`` and ``timeout = 30`` work) and coerce to float.
+        # Reject bools (TOML true/false are bool), non-numbers, and any
+        # non-finite/non-positive value, mirroring the --timeout argparse type.
+        import math
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(
+                f"--config {path}: {key} must be a positive number of seconds, "
+                f"got {value!r}"
+            )
+        fval = float(value)
+        if not math.isfinite(fval) or fval <= 0:
+            raise ConfigError(
+                f"--config {path}: {key} must be a positive number of seconds "
+                f"(> 0), got {value}"
+            )
+        return fval
 
     if key in _CHOICE_KEYS:
         if not isinstance(value, str):

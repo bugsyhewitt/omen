@@ -120,6 +120,7 @@ omen --batch <dir-or-list-file> \
      --input-type {sol,address} \
      [--ignore PATTERN[,PATTERN...]]   # skip vendored/third-party paths \
      [--parallel N]                    # analyze N contracts concurrently \
+     [--timeout SECONDS]               # per-contract wall-clock budget; abandon overruns \
      [--batch-summary]                 # aggregate roll-up to stderr after the JSONL \
      [--check ...] [--rpc-url URL] [--min-confidence ...] [--min-severity ...] \
      [--severity-override CATEGORY=SEVERITY[,...]] \
@@ -144,6 +145,7 @@ omen --list-checks [--format {text,json}]
 - `-o` / `--output-file` — write the report to `PATH` instead of stdout. Default: stdout (the historical behaviour). Composes with every `--format`: in single-contract mode the file gets the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch` mode it gets the JSONL stream (one JSON object per contract). The write is **atomic** — content goes to a sibling `.tmp` and is renamed into place — so a crash mid-write never clobbers a previously good report with a truncated one. Parent directories are created as needed. The `--fail-on` exit code is unaffected: the gate trips the same whether the report went to a file or stdout. See [Writing the report to a file](#writing-the-report-to-a-file).
 - `--ignore` — in `--batch` mode, skip contract paths/addresses matching any of these comma-separated [glob](https://docs.python.org/3/library/fnmatch.html) patterns. A pattern matches the full path, any single path component, or — when it contains a `/` — any sub-path, so `--ignore node_modules,lib,test` drops vendored/third-party trees (e.g. an OpenZeppelin import tree) from a recursive directory scan or a list file without hand-pruning the input. Globs support `*`, `?`, and `[seq]`. Ignored items produce no output and no error. Default: ignore nothing. No effect in single `--contract` mode. See [Excluding paths from a batch scan](#excluding-paths-from-a-batch-scan).
 - `--parallel` — in `--batch` mode, analyze up to `N` contracts concurrently (a positive integer). Default: `1` (sequential — the historical behaviour). Use a higher `N` to speed up a whole-program scan of dozens-to-hundreds of contracts; the wall-clock win comes from the `solc`/`vyper` compiler subprocess each scan shells out to. Output, the `--fail-on` gate, the error count, and the `--batch-summary` roll-up stay in deterministic **input order**, so a parallel run's JSONL and exit code are byte-for-byte identical to the sequential run's — only faster. No effect in single `--contract` mode. See [Parallelizing a batch scan](#parallelizing-a-batch-scan).
+- `--timeout` — in `--batch` mode, give each contract at most `SECONDS` of wall-clock analysis time (a positive number; fractional values like `2.5` are allowed). Default: no budget (each scan runs to completion, the historical behaviour). A contract whose scan overruns is **abandoned and recorded as a per-item error** — it counts toward the exit-`1` error tally and the `--batch-summary` error count, with a message to stderr — so one pathological contract (a hanging compiler, a runaway symbolic path) can't stall a whole-program scan of dozens-to-hundreds of contracts. Enforced on the same thread-pool seam as `--parallel`, so output, the `--fail-on` gate, the error count, and the summary all stay in deterministic **input order**. To actually make progress *past* a stuck contract, pair it with `--parallel >= 2` (a free worker); with the default single worker the budget still bounds each item but a stuck scan blocks the items queued behind it. No effect in single `--contract` mode. See [Bounding per-contract scan time](#bounding-per-contract-scan-time).
 - `--batch-summary` — in `--batch` mode, print an aggregate roll-up to **stderr** after the JSONL stream: how many contracts were scanned / had findings / errored, the total findings broken down by severity (worst-first), and the worst-affected contracts. It answers "what did the whole-program scan find, overall?" without piping the JSONL through `jq`. The roll-up goes to stderr so the stdout JSONL stays machine-clean. No effect in single `--contract` mode. Default: off. See [Summarizing a batch scan](#summarizing-a-batch-scan).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
@@ -349,6 +351,53 @@ Notes:
   contract); it is accepted there as a no-op so a committed `omen.toml` carrying
   `parallel = 8` still works for single scans. Like every other flag it can be
   set in `omen.toml`.
+
+### Bounding per-contract scan time
+
+`--parallel` protects a whole-program batch's throughput from the *aggregate*
+cost of many scans; `--timeout` protects it from the *opposite* hazard: a single
+pathological contract whose scan never finishes (a compiler that hangs, a
+runaway symbolic path, a degenerate import graph) and would otherwise stall the
+entire run. `--timeout SECONDS` gives each contract a wall-clock budget; a scan
+that overruns is **abandoned and recorded as a per-item error** so the batch
+makes progress:
+
+```bash
+omen --batch ./contracts --input-type sol --check all \
+     --ignore node_modules,lib,test --parallel 8 --timeout 60 > scan.jsonl
+```
+
+A timed-out contract is treated exactly like a scan that raised: a message goes
+to stderr (`omen: batch timeout [path]: analysis exceeded 60s budget`), it
+counts toward the exit-`1` error tally and the `--batch-summary` error count, and
+it produces no JSONL line. The surviving contracts' output, the `--fail-on` gate,
+and the summary all stay in deterministic **input order**, exactly as with
+`--parallel`. The budget is enforced on the same thread-pool seam, so the two
+compose: `--parallel 8 --timeout 60` runs eight contracts at once and abandons
+any that overruns a minute.
+
+Notes:
+
+- **Pair `--timeout` with `--parallel >= 2` to actually skip past a stuck
+  contract.** The budget bounds how long omen *waits* on each item, not the scan
+  itself (it deliberately does not kill the in-process analysis — see below). A
+  single worker can only run one scan at a time, so a contract that stalls the
+  lone worker also times out the contracts queued behind it. A free worker
+  (`--parallel >= 2`) lets the others proceed while the stuck one's budget
+  expires.
+- `SECONDS` must be a positive, finite number; `0`, a negative, NaN, and infinity
+  are usage errors (exit `2`). Fractional values (`2.5`) are allowed, unlike the
+  integer-only `--limit`/`--parallel`.
+- omen does **not** subprocess-wrap or kill the abandoned scan. Slither runs
+  in-process; killing it mid-analysis would mean subprocess-isolating the whole
+  analysis path, which would change omen's defining architecture for no
+  proportionate gain. The abandoned worker thread is left to finish and is
+  reclaimed when the pool shuts down; the budget bounds the batch's *blocking
+  wait*, which is the bounty-workflow value — getting past the stuck contract.
+- `--timeout` has **no effect in single `--contract` mode** (one target, nothing
+  a per-item batch budget bounds); it is accepted there as a no-op so a committed
+  `omen.toml` carrying `timeout = 60` still works for single scans. Like every
+  other flag it can be set in `omen.toml`.
 
 ### Listing the detection classes
 
@@ -861,9 +910,9 @@ The contract is deliberately small and predictable:
 - **Keys are flag names** with the leading `--` dropped; dashes and underscores
   are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
   the short alias for `output-file`. Settable keys: `contract`, `batch`,
-  `input-type`, `check`, `exclude-check`, `ignore`, `parallel`, `batch-summary`,
-  `rpc-url`, `format`, `min-confidence`, `min-severity`, `severity-override`,
-  `sort`, `limit`, `fail-on`, `output-file`.
+  `input-type`, `check`, `exclude-check`, `ignore`, `parallel`, `timeout`,
+  `batch-summary`, `rpc-url`, `format`, `min-confidence`, `min-severity`,
+  `severity-override`, `sort`, `limit`, `fail-on`, `output-file`.
 - **Values are validated** against the same choices the CLI enforces, so a typo
   in the file is caught at load time with a clear, file-named error (exit `2`),
   not silently fed into the analyzer.

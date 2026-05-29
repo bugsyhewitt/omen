@@ -961,6 +961,93 @@ land.
 
 ---
 
+### R2.14. `--timeout` per-contract batch budget
+
+**Rank: 14 (Rotation 2) — zero-dependency batch resilience**
+
+> **STATUS: ✅ IMPLEMENTED (R23, 2026-05-29).** `--timeout SECONDS` gives each
+> contract a per-contract wall-clock budget in `--batch` mode (default: no budget
+> — each scan runs to completion, the historical behaviour). A contract whose
+> scan overruns is abandoned and recorded as a per-item error (the same
+> `(None, error)` shape an exception produces): it counts toward the exit-`1`
+> error tally and the `--batch-summary` error count, with an
+> `omen: batch timeout [path]: analysis exceeded Ns budget` message to stderr,
+> and produces no JSONL line. This protects a whole-program batch's throughput
+> from the hazard `--parallel` (R2.13) does not address: a *single* pathological
+> contract (a hanging compiler, a runaway symbolic path, a degenerate import
+> graph) that never finishes and would otherwise stall the entire
+> dozens-to-hundreds-of-contracts run. **The defining design decision is that
+> `--timeout` is enforced on the existing `--parallel` thread-pool orchestration
+> seam, not by subprocess-isolating Slither.** The roadmap flagged `--timeout`
+> five times (R17–R20, and again in the R22/R2.13 reasoning) as the riskiest
+> candidate *specifically because* a naive reading — per-check timeout of the
+> in-process `slither.run_detectors()` call — needs subprocess wrapping of the
+> analysis path that violates the Anti-Abstraction and Simplicity gates and
+> changes omen's defining architecture. The unlock is that the **batch** layer
+> already runs each `analyze` call in a worker future (R2.13), so the budget can
+> be enforced from the driver thread with `Future.result(timeout=...)` —
+> abandoning the *wait* on an overrunning item — without touching any analysis
+> code, detector, or format, and without killing the in-process scan. Setting a
+> timeout therefore always takes the pool path (a single shared worker at
+> `--parallel 1`), since the budget can only be enforced by waiting on a future.
+> The honest semantic, pinned by a test and documented: the budget bounds the
+> *wait*, not the scan — with the default single worker a stuck scan still
+> occupies the lone thread, so items queued behind it also time out; **the
+> "make progress past a stuck contract" guarantee needs a free worker, i.e.
+> pairing `--timeout` with `--parallel >= 2`.** The abandoned worker thread is
+> left to finish and is reclaimed at pool shutdown (`shutdown(wait=False,
+> cancel_futures=True)` so the batch returns promptly past the stuck item),
+> rather than forcibly killed. Order is preserved exactly as for `--parallel`:
+> results (report or timeout error) are folded into the run's state in input
+> order via the same `_consume` closure, so the JSONL stream, the `--fail-on`
+> gate, the error count, and the summary stay deterministic. Built the same
+> zero-dependency way as the rest of Rotation 2: a `parse_timeout()` validation
+> primitive in `batch.py` (positive **float** — fractional sub-second budgets are
+> sensible, unlike integer worker counts; `None` = no budget; `0`, negatives,
+> NaN, infinity, and `bool` rejected), wired through `run_batch` (a `timeout`
+> parameter; a 0/1-item batch keeps the sequential path) and the CLI (a
+> `_positive_float` argparse type, so a non-positive value is an exit-`2` usage
+> error like `--limit`/`--parallel`). `config.py` gains a `_FLOAT_KEYS` set with
+> `timeout` (accepts `timeout = 2.5` or `timeout = 30`, coerced to float;
+> non-finite/non-positive/bool/string rejected at load time). **No effect in
+> single `--contract` mode** (one target, nothing a per-item batch budget bounds)
+> — accepted there as a no-op so a committed `omen.toml` carrying `timeout = 60`
+> still works for single scans. Tests in `tests/test_timeout.py` (31 cases:
+> `parse_timeout` primitive incl. zero/negative/NaN/inf/bool/non-numeric
+> rejection and int/float/string acceptance; `run_batch` — slow-item
+> abandonment, clean-run-unaffected, input-order preservation, summary error
+> counting, error-outranks-gate, output-file composition, prompt progress past a
+> stuck item, the single-worker-blocks-queue semantic, default-unchanged,
+> bad-value raise; config — float/int accepted, non-positive/bool/string
+> rejected; CLI — help, namespace parse, default `None`, exit-`2` on `0`,
+> single-contract no-op end-to-end, batch end-to-end input-order). README gains a
+> "Bounding per-contract scan time" section plus usage-block, flag-list, and
+> config-key mentions. Pure orchestration change — no analysis-path, detector, or
+> format change, no new dependency (`concurrent.futures` is stdlib), and fully
+> backward compatible (default no-budget is the historical behaviour) — so it
+> runs offline / in CI / on a fresh checkout with no compiler installed.
+>
+> **Why (R23 reasoning):** `--timeout` was the leading un-shipped candidate the
+> R22 note carried forward, and the only one whose blocker was an architecture
+> objection rather than low value. That objection turned out to be against a
+> *specific implementation* (subprocess-isolating the in-process Slither analysis
+> per check), not against `--timeout` as a feature — and R2.13 had just built the
+> exact seam (a thread pool over independent `analyze` futures) that makes the
+> feature shippable without that implementation. `Future.result(timeout=...)`
+> bounds the batch's blocking wait per contract, which is the real
+> bounty-workflow value: a hundred-contract scope must not be held hostage by one
+> contract that never compiles. Shipping it on the batch seam keeps every gate
+> intact — no abstraction layer over Slither, no subprocess plumbing, no
+> dependency, no architecture change — while honestly scoping what the budget
+> does (bounds the wait, pair with `--parallel` to skip past). The remaining
+> un-shipped Rotation 2 candidate is `--quiet`, which stays near-vacuous (omen
+> prints only the report to stdout); per-category severity tuning is already
+> covered by `--severity-override` (R21). With R2.14 the batch axis now spans
+> *which* files (`--ignore`), *how fast* (`--parallel`), *how long each may take*
+> (`--timeout`), and *how the result reads* (`--batch-summary`).
+
+---
+
 ### R2.13. `--parallel` batch concurrency
 
 **Rank: 13 (Rotation 2) — zero-dependency batch throughput**
