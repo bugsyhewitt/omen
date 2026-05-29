@@ -7,6 +7,7 @@
          [--rpc-url URL] [--format {json,text,h1md,sarif}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
+         [--severity-override CATEGORY=SEVERITY[,...]]
          [--sort {severity,none}] [--limit N]
          [--fail-on {never,informational,low,medium,high,critical}]
          [-o/--output-file PATH]
@@ -270,6 +271,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--severity-override",
+        default=None,
+        metavar="CATEGORY=SEVERITY[,...]",
+        help=(
+            "org-specific risk tuning: pin the severity omen reports for one or "
+            "more detection classes to your own risk model, overriding the "
+            "built-in defaults (and, in source mode, Slither's per-finding "
+            "impact). A comma-separated list of CATEGORY=SEVERITY pairs, e.g. "
+            "'--severity-override reentrancy=critical,tx-origin=high'. SEVERITY "
+            "is one of informational/low/medium/high/critical. The override is "
+            "applied before --min-severity, --sort, --limit, and --fail-on, so a "
+            "pinned class surfaces and gates at the configured level (and a class "
+            "pinned down can be filtered out as noise). Applies in single and "
+            "--batch mode. Only the severity changes; the finding stays traceable."
+        ),
+    )
+    parser.add_argument(
         "--sort",
         default="severity",
         choices=["severity", "none"],
@@ -428,6 +446,18 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    # Validate --severity-override up front (org-specific risk tuning): it is a
+    # comma-separated CATEGORY=SEVERITY list, so argparse cannot enforce it.
+    # parse_severity_overrides rejects a malformed pair, an unknown category, or
+    # an unknown severity; surface that as a usage error (exit 2) rather than a
+    # runtime crash, consistent with --check / --ignore validation above.
+    from .findings import parse_severity_overrides
+
+    try:
+        parse_severity_overrides(args.severity_override)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     # --- Batch mode ---
     if args.batch is not None:
         from .batch import run_batch
@@ -446,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             output_file=args.output_file,
             ignore=args.ignore,
             batch_summary=args.batch_summary,
+            severity_override=args.severity_override,
         )
 
     # --- Single-contract mode ---
@@ -468,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             fail_on=args.fail_on,
             exclude_check=args.exclude_check,
+            severity_override=args.severity_override,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)

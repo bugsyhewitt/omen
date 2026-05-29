@@ -28,9 +28,11 @@ from .findings import (
     Evidence,
     Finding,
     Severity,
+    apply_severity_overrides,
     confidence_rank,
     fail_on_triggered,
     parse_limit,
+    parse_severity_overrides,
     severity_rank,
     sort_key,
 )
@@ -517,6 +519,7 @@ def analyze(
     limit: int | str | None = None,
     fail_on: str | None = None,
     exclude_check: str | None = None,
+    severity_override: str | None = None,
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
@@ -554,9 +557,20 @@ def analyze(
     ``--check`` set — the inverse selector. ``None`` (the default) excludes
     nothing. Excluding a category ``--check`` did not select is a no-op;
     excluding every selected category is a usage error.
+
+    *severity_override* (org-specific risk tuning) is a comma-separated list of
+    ``CATEGORY=SEVERITY`` pairs (e.g. ``reentrancy=critical,tx-origin=high``).
+    ``None`` (the default) overrides nothing. Each matched finding's severity is
+    re-stamped to the configured value *before* the ``--min-severity`` filter,
+    ``--sort severity`` ordering, the ``--limit`` cap, and the ``--fail-on`` gate,
+    so an override flows through the whole pipeline (it can both surface a class
+    that would otherwise be filtered out and trip the CI gate at the pinned
+    level). Only severity changes — category/confidence/evidence/detector are
+    preserved.
     """
     limit_n = parse_limit(limit)
     checks = resolve_checks(check, exclude_check)
+    overrides = parse_severity_overrides(severity_override)
     src = load_input(contract, input_type, rpc_url)
 
     if src.input_type in ("sol", "vyper"):
@@ -564,6 +578,9 @@ def analyze(
     else:  # bytecode or address (both reduce to bytecode analysis)
         findings = _analyze_bytecode(src, checks)
 
+    # Re-stamp severities per the override map first, so the filter/sort/gate
+    # pipeline below all act on the org-tuned severity rather than the default.
+    findings = apply_severity_overrides(findings, overrides)
     findings = _filter_by_confidence(findings, min_confidence)
     findings = _filter_by_severity(findings, min_severity)
     findings = _sort_findings(findings, sort)

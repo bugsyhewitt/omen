@@ -134,6 +134,103 @@ def parse_limit(limit: "int | str | None") -> int | None:
     return limit
 
 
+def parse_severity_overrides(
+    value: "str | None",
+) -> "dict[str, Severity]":
+    """Parse a ``--severity-override`` spec into a {category: Severity} map.
+
+    The spec is a comma-separated list of ``CATEGORY=SEVERITY`` pairs, e.g.
+    ``reentrancy=critical,tx-origin=high``. It lets an org pin the severity omen
+    reports for a given detection class to match its own risk model, instead of
+    accepting omen's built-in defaults (and, in source mode, Slither's
+    per-finding impact). This is the org-specific risk-tuning lever the R2.10
+    config work deliberately deferred ("no per-category overrides" was the
+    Simplicity-Gate floor for the flat config map); it now lives as its own flag
+    that composes with the existing filter/sort/gate pipeline.
+
+    Resolution rules (mirroring the other comma-list parsers):
+      - ``None`` / blank -> empty map (no override; the default behaviour).
+      - Pairs split on commas; surrounding whitespace and empty segments (a
+        trailing comma) are ignored.
+      - Each pair is ``CATEGORY=SEVERITY``; both sides are trimmed and the
+        severity is lower-cased. A missing ``=`` (or an empty side) is an error.
+      - ``CATEGORY`` must be a known omen category; ``SEVERITY`` must be one of
+        informational/low/medium/high/critical.
+      - A later pair for the same category wins (last-write), so a repeated
+        category is not an error — the rightmost value is the effective one.
+
+    Raises ``ValueError`` (which the CLI turns into a usage error, exit 2) with a
+    message naming the offending token and the valid choices.
+    """
+    from . import CATEGORIES
+
+    raw = (value or "").strip()
+    if not raw:
+        return {}
+
+    sev_choices = ", ".join(s.value for s in SEVERITY_ORDER)
+    cat_choices = ", ".join(CATEGORIES)
+
+    overrides: dict[str, Severity] = {}
+    for segment in raw.split(","):
+        pair = segment.strip()
+        if not pair:
+            continue  # tolerate trailing/double commas
+        if "=" not in pair:
+            raise ValueError(
+                f"--severity-override entry {pair!r} must be CATEGORY=SEVERITY "
+                f"(e.g. reentrancy=critical)"
+            )
+        cat_part, sev_part = pair.split("=", 1)
+        category = cat_part.strip()
+        sev_text = sev_part.strip().lower()
+        if not category or not sev_text:
+            raise ValueError(
+                f"--severity-override entry {pair!r} must be CATEGORY=SEVERITY "
+                f"(e.g. reentrancy=critical)"
+            )
+        if category not in CATEGORIES:
+            raise ValueError(
+                f"--severity-override: unknown category {category!r}; "
+                f"choose from {cat_choices}"
+            )
+        try:
+            severity = Severity(sev_text)
+        except ValueError:
+            raise ValueError(
+                f"--severity-override: unknown severity {sev_text!r} for "
+                f"{category!r}; choose from {sev_choices}"
+            )
+        overrides[category] = severity  # last-write wins for a repeated category
+    return overrides
+
+
+def apply_severity_overrides(
+    findings: "list[Finding]",
+    overrides: "dict[str, Severity]",
+) -> "list[Finding]":
+    """Re-stamp each finding's severity from *overrides* (by category).
+
+    Returns the same list, mutated in place: any finding whose category appears
+    in *overrides* has its ``severity`` replaced with the configured value; the
+    rest are untouched. An empty *overrides* map is a no-op. This runs in
+    ``analyze`` *before* the ``--min-severity`` filter, ``--sort severity``
+    ordering, the ``--limit`` cap, and the ``--fail-on`` gate, so an override
+    flows through the whole pipeline: pinning ``tx-origin=high`` both surfaces it
+    under ``--min-severity high`` and trips ``--fail-on high``, and pinning a
+    class *down* (e.g. ``greedy=informational``) lets ``--min-severity low`` drop
+    its noise. Only the severity changes — category, confidence, evidence, and
+    the detector id are preserved, so the finding stays fully traceable.
+    """
+    if not overrides:
+        return findings
+    for finding in findings:
+        new_sev = overrides.get(finding.category)
+        if new_sev is not None:
+            finding.severity = new_sev
+    return findings
+
+
 # Confidence ordering, low -> high. Used by the --min-confidence filter
 # (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
 # omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty

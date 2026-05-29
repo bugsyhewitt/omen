@@ -56,6 +56,11 @@ _STR_KEYS = frozenset(
         "exclude_check",
         "rpc_url",
         "ignore",
+        # org-specific risk tuning: a CATEGORY=SEVERITY[,...] list, validated on
+        # the merged value by findings.parse_severity_overrides at scan time
+        # (exactly as a CLI value would be), so here it is only required to be a
+        # string — mirroring how check/exclude_check are handled.
+        "severity_override",
     }
 )
 

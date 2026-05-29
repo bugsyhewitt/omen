@@ -225,6 +225,7 @@ def run_batch(
     output_file: str | None = None,
     ignore: str | None = None,
     batch_summary: bool = False,
+    severity_override: str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -272,6 +273,12 @@ def run_batch(
     for tooling, and it is built from the same per-contract report dicts that
     were already streamed, so it adds no extra analysis.
 
+    *severity_override* (org-specific risk tuning) is a comma-separated list of
+    ``CATEGORY=SEVERITY`` pairs forwarded to ``analyze`` for each item, so the
+    same per-category severity re-stamping applies uniformly across the batch
+    (and composes with the per-item ``--min-severity``/``--sort``/``--fail-on``
+    pipeline exactly as in single-contract mode).
+
     Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
     tripped on any item; otherwise 0.
     """
@@ -298,6 +305,7 @@ def run_batch(
                 limit=limit,
                 fail_on=fail_on,
                 exclude_check=exclude_check,
+                severity_override=severity_override,
             )
         except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)
