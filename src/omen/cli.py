@@ -345,6 +345,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--parallel",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "in --batch mode, analyze up to N contracts concurrently (default: "
+            "1, i.e. sequential — the historical behaviour). Use a higher N to "
+            "speed up a whole-program scan of dozens-to-hundreds of contracts; "
+            "the wall-clock win comes from the solc/vyper compiler each scan "
+            "shells out to. Output, the --fail-on gate, the error count, and the "
+            "--batch-summary roll-up stay in deterministic input order, so a "
+            "parallel run's JSONL and exit code are identical to the sequential "
+            "run's — only faster. No effect in single --contract mode."
+        ),
+    )
+    parser.add_argument(
         "--batch-summary",
         action="store_true",
         help=(
@@ -477,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
             ignore=args.ignore,
             batch_summary=args.batch_summary,
             severity_override=args.severity_override,
+            parallel=args.parallel,
         )
 
     # --- Single-contract mode ---

@@ -961,6 +961,78 @@ land.
 
 ---
 
+### R2.13. `--parallel` batch concurrency
+
+**Rank: 13 (Rotation 2) — zero-dependency batch throughput**
+
+> **STATUS: ✅ IMPLEMENTED (R22, 2026-05-29).** `--parallel N` analyzes up to N
+> contracts concurrently in `--batch` mode (default `1` — sequential, the
+> historical behaviour). The bounty workflow `--batch` exists for is scanning a
+> whole program scope (dozens to hundreds of contracts); each `analyze` call is
+> independent and its wall time is dominated by the `solc`/`vyper` compiler
+> subprocess it shells out to (which releases the GIL), so a
+> `concurrent.futures.ThreadPoolExecutor` over the items gives a real speedup
+> without multiprocessing's pickling/import-state hazards. **The defining
+> invariant is that concurrency never reorders the result:** output, the
+> `--fail-on` gate (the OR across items), the error count, and the
+> `--batch-summary` roll-up are all assembled in deterministic **input order**
+> regardless of which scan finishes first (the per-item work is folded into the
+> run's state via a single `_consume` closure called in input order; the pool
+> path uses `executor.map`, which preserves submission order), so a `--parallel
+> N` run's JSONL stream and exit code are byte-for-byte identical to the
+> sequential run's — only faster. The trade-off vs. the sequential path is
+> memory: a parallel run buffers the ordered results before emitting them rather
+> than streaming line by line; the sequential default keeps the streaming,
+> low-memory profile unchanged. Built the same zero-dependency way as the rest of
+> Rotation 2: a `parse_parallel()` validation primitive in `batch.py`
+> (positive-int only, mirroring `parse_limit`; `None`/`1` = no concurrency; `0`,
+> negatives, and `bool` rejected) and an `_analyze_one()` per-item helper that
+> returns a `(report, error)` pair so the try/except is shared between the
+> sequential and pool paths, wired through `run_batch` (a `parallel` parameter; a
+> 0/1-item batch always takes the sequential path since a pool would be pure
+> overhead) and the CLI (`type=_positive_int`, so a non-positive value is an
+> exit-`2` usage error, identical to `--limit`). `config.py` gains `parallel` as
+> an `_INT_KEYS` member so `parallel = 8` is a recognised, positive-int-validated
+> config key. **No effect in single `--contract` mode** (one target, nothing to
+> parallelise) — accepted there as a no-op so a committed `omen.toml` carrying
+> `parallel = 8` still works for single scans. Tests in `tests/test_parallel.py`
+> (27 cases: parse_parallel primitive incl. zero/negative/bool/non-numeric
+> rejection; run_batch — input-order preservation under a finish-order-reversing
+> mock, byte-for-byte equivalence with the sequential run, true-concurrency
+> overlap check, gate OR across items, error-outranks-gate, summary error
+> counting, output-file ordering, single-item/default sequential paths, bad-value
+> raise; config — `parallel` key accepted / non-positive / bool rejected; CLI —
+> help, namespace parse, default `None`, exit-`2` on `0`, single-contract no-op
+> end-to-end, batch end-to-end input-order). README gains a "Parallelizing a
+> batch scan" section plus usage-block, flag-list, and config-key mentions. Pure
+> orchestration change — no analysis-path, detector, or format change, and the
+> thread pool imports nothing heavy, so it runs offline / in CI / on a fresh
+> checkout with no compiler installed.
+>
+> **Why (R22 research-lap reasoning):** The suggested item paired `--parallel`
+> concurrency with `--timeout` per-check subprocess isolation. `--timeout` has
+> been flagged four times across this roadmap (R17/R18/R19/R20) as the riskiest
+> candidate — Slither runs in-process (`slither.run_detectors()`), so per-check
+> timeout needs subprocess wrapping of the analysis path that violates the
+> Anti-Abstraction and Simplicity gates and would change the defining
+> architecture. `--parallel`, by contrast, lives entirely in the existing
+> `run_batch` orchestration seam: the loop was already `for item in
+> _iter_items(...)` over independent `analyze` calls, so swapping the driver for
+> a thread pool touches no analysis code, no detector, and no format, adds no
+> dependency (`concurrent.futures` is stdlib), and is fully backward compatible
+> (default `1` is the historical sequential path). It is the highest-value batch
+> lever left after R2.1–R2.12 built the full per-contract triage surface and the
+> R2.11/R2.12 batch input-selection and aggregate-roll-up axes: those shaped
+> *which* files a batch visits and *how the result reads*, but nothing addressed
+> the batch's *throughput* — the literal time a whole-program scan takes, which
+> on a hundred-contract scope is the dominant cost. `--timeout` (still needs
+> Slither subprocess isolation) and per-category severity overrides
+> (`--severity-override` already covers the severity-tuning need as of R21) remain
+> the leading un-shipped candidates for a future lap; `--quiet` stays near-vacuous
+> (omen prints only the report to stdout).
+
+---
+
 > **Rotation 2 status (as of R18, 2026-05-29).** R2.1–R2.10 shipped. The Rotation 2
 > theme has been the triage/UX surface around the now-ten-class detector roster:
 > R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →
