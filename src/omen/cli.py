@@ -1,7 +1,7 @@
 """omen command-line interface.
 
     omen --contract <path-or-address> --input-type {sol,vyper,bytecode,address}
-         --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
+         --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--rpc-url URL] [--format {json,text,h1md,sarif}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
@@ -100,8 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check",
         default="all",
-        choices=[*CATEGORIES, "all"],
-        help="which vulnerability class to check for (default: all)",
+        metavar="CATEGORY[,CATEGORY...]",
+        help=(
+            "which vulnerability class(es) to check for (default: all). Accepts "
+            "a single category, 'all', or a comma-separated list (e.g. "
+            "'access-control,delegatecall,upgrade' to scope a scan to the "
+            f"proxy/admin attack cluster). Valid categories: {', '.join(CATEGORIES)}. "
+            "'all' must be used alone."
+        ),
     )
     parser.add_argument(
         "--rpc-url",
@@ -217,6 +223,19 @@ def main(argv: list[str] | None = None) -> int:
     # Validate the address-mode gate early for a clear error.
     if args.input_type == "address" and not args.rpc_url:
         parser.error("--input-type address requires --rpc-url")
+
+    # Validate --check up front (POST_V01 Rotation 2, R2.7): it accepts a single
+    # category, 'all', or a comma-separated list, so argparse `choices` can no
+    # longer enforce it. resolve_checks parses/validates the value; surface a bad
+    # one as an argparse-style usage error (exit 2) rather than letting it fall
+    # through to a runtime analysis error. The import is local so --help/--version
+    # stay free of the analysis stack; resolve_checks itself imports nothing heavy.
+    from .analyzer import resolve_checks
+
+    try:
+        resolve_checks(args.check)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # --- Batch mode ---
     if args.batch is not None:

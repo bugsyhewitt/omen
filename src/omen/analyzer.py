@@ -40,14 +40,61 @@ from .vyper_env import require_vyper
 
 
 def resolve_checks(check: str) -> list[str]:
-    """Expand the --check value into a concrete list of categories."""
-    if check == "all":
+    """Expand the --check value into a concrete list of categories.
+
+    Accepts (POST_V01 Rotation 2, R2.7) a single category, the keyword ``all``,
+    or a comma-separated list of categories (e.g.
+    ``access-control,delegatecall,upgrade`` — the proxy/admin attack cluster).
+    The comma-list lets a bounty hunter scope a scan to exactly the detection
+    surface a given program needs in one run, instead of either accepting the
+    noise of ``all`` or running several single-category scans and merging them.
+
+    Resolution rules:
+      - ``all`` expands to every category, in ``CATEGORIES`` order. It may not be
+        combined with other names (``all,reentrancy`` is rejected as a mistake —
+        ``all`` already includes everything).
+      - A list is split on commas; surrounding whitespace and empty segments
+        (e.g. a trailing comma) are ignored.
+      - Duplicates are removed while preserving first-seen order, so
+        ``reentrancy,reentrancy`` resolves to ``[reentrancy]`` and the order a
+        user lists classes in is the order they appear.
+      - Every name must be a known category; an unknown name raises ``ValueError``
+        naming the offender and listing the valid choices.
+    """
+    raw = (check or "").strip()
+    if raw == "all":
         return list(CATEGORIES)
-    if check not in CATEGORIES:
+
+    # Split on commas, trim each segment, drop blanks (tolerates trailing/double
+    # commas and surrounding whitespace).
+    parts = [seg.strip() for seg in raw.split(",")]
+    names = [p for p in parts if p]
+    if not names:
         raise ValueError(
-            f"unknown check {check!r}; choose from {', '.join(CATEGORIES)} or 'all'"
+            f"--check requires at least one category; "
+            f"choose from {', '.join(CATEGORIES)} or 'all'"
         )
-    return [check]
+
+    # 'all' inside a list is ambiguous: it already covers everything, so combining
+    # it with explicit names is almost certainly a mistake. Reject it plainly.
+    if "all" in names:
+        if len(names) == 1:
+            return list(CATEGORIES)
+        raise ValueError(
+            "--check 'all' cannot be combined with other categories; "
+            "use 'all' alone or list the specific categories you want"
+        )
+
+    resolved: list[str] = []
+    for name in names:
+        if name not in CATEGORIES:
+            raise ValueError(
+                f"unknown check {name!r}; choose from "
+                f"{', '.join(CATEGORIES)} or 'all'"
+            )
+        if name not in resolved:  # dedupe, preserve first-seen order
+            resolved.append(name)
+    return resolved
 
 
 @dataclass
