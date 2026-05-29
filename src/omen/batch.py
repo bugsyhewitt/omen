@@ -25,12 +25,99 @@ import fnmatch
 import json
 import sys
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator
 
 from .analyzer import analyze
 from .solc_env import SolcUnavailableError
 from .sources import InputError
 from .vyper_env import VyperUnavailableError
+
+
+# Severity ordering for the batch aggregate summary (POST_V01 Rotation 2,
+# R2.12). Worst-first so the roll-up reads the same direction as the default
+# per-contract --sort severity and the --format text summary. Kept local to
+# batch.py (a tuple of the string values) so the aggregation primitive imports
+# nothing heavy — the summary must work in a fresh checkout with no compiler.
+_SUMMARY_SEVERITY_ORDER = ("critical", "high", "medium", "low", "informational")
+
+
+def summarize_batch(reports: list[dict[str, Any]], errors: int) -> str:
+    """Build the aggregate roll-up line(s) for a --batch run (R2.12).
+
+    *reports* is the list of per-contract report dicts (the same dicts emitted
+    as JSONL) for the contracts that scanned cleanly; *errors* is the number of
+    items that failed. The summary answers the first question a bounty hunter
+    asks after scanning a whole program scope: how much did omen cover, how much
+    of it had findings, and what is the severity profile across the whole scope —
+    without having to pipe the JSONL through ``jq`` and aggregate by hand.
+
+    The roll-up is a small, human-readable block:
+
+      - a header line with the contract/error/finding totals;
+      - a worst-first per-severity total line (only severities that occur);
+      - up to the five worst-affected contracts (most findings first), each with
+        its finding count, so the analyst knows where to look first.
+
+    It is a pure function of its inputs — no I/O, no analysis — so it is unit
+    testable in isolation and adds no dependency.
+    """
+    scanned = len(reports)
+    with_findings = 0
+    total_findings = 0
+    severity_totals: dict[str, int] = {}
+    per_contract: list[tuple[str, int]] = []
+    gate_tripped = False
+
+    for rep in reports:
+        findings = rep.get("findings") or []
+        count = len(findings)
+        # total_findings (pre-limit) is the honest scope total; fall back to the
+        # shown count for older/mocked dicts that lack it.
+        scope_count = rep.get("total_findings")
+        if not isinstance(scope_count, int):
+            scope_count = count
+        if scope_count:
+            with_findings += 1
+        total_findings += scope_count
+        per_contract.append((str(rep.get("origin", "?")), scope_count))
+        if rep.get("gate_triggered"):
+            gate_tripped = True
+        for f in findings:
+            sev = str(f.get("severity", "")).strip().lower()
+            if sev:
+                severity_totals[sev] = severity_totals.get(sev, 0) + 1
+
+    lines: list[str] = []
+    lines.append("omen batch summary")
+    lines.append(
+        f"contracts: {scanned} scanned, {with_findings} with findings, "
+        f"{errors} errored"
+    )
+
+    sev_parts = [
+        f"{severity_totals[sev]} {sev}"
+        for sev in _SUMMARY_SEVERITY_ORDER
+        if severity_totals.get(sev)
+    ]
+    sev_line = ", ".join(sev_parts) if sev_parts else "none"
+    lines.append(f"findings: {total_findings} total  [{sev_line}]")
+
+    # Worst-affected contracts: most findings first, ties keep scan order
+    # (sorted is stable on the enumerate index we never expose). Only list
+    # contracts that actually had findings, capped at five so the block stays a
+    # glance rather than a second report.
+    affected = [(origin, n) for origin, n in per_contract if n]
+    affected.sort(key=lambda item: -item[1])
+    if affected:
+        lines.append("top affected:")
+        for origin, n in affected[:5]:
+            noun = "finding" if n == 1 else "findings"
+            lines.append(f"  {n} {noun}  {origin}")
+
+    if gate_tripped:
+        lines.append("--fail-on gate: TRIPPED")
+
+    return "\n".join(lines)
 
 
 def parse_ignore(ignore: str | None) -> list[str]:
@@ -137,6 +224,7 @@ def run_batch(
     exclude_check: str | None = None,
     output_file: str | None = None,
     ignore: str | None = None,
+    batch_summary: bool = False,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -175,12 +263,26 @@ def run_batch(
     recursive directory scan or a list file so a whole-repo batch stays scoped
     to first-party code. Ignored items produce no JSONL line and no error.
 
+    *batch_summary* (POST_V01 Rotation 2, R2.12) prints an aggregate roll-up to
+    **stderr** after the JSONL stream when True (default False). It answers the
+    first question after a whole-program scan — how much was covered, how much
+    had findings, the severity profile across the whole scope, and the
+    worst-affected contracts — without piping the JSONL through ``jq``. It goes
+    to stderr (never stdout) so the JSONL stream on stdout stays machine-clean
+    for tooling, and it is built from the same per-contract report dicts that
+    were already streamed, so it adds no extra analysis.
+
     Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
     tripped on any item; otherwise 0.
     """
     any_error = False
+    error_count = 0
     gate_tripped = False
     buffered: list[str] = []
+    # Collected per-contract report dicts, kept only when --batch-summary is on
+    # (the aggregate is built from them); otherwise we never retain them, so a
+    # large batch without the summary keeps its streaming, low-memory behaviour.
+    collected: list[dict[str, Any]] = []
     ignore_patterns = parse_ignore(ignore)
 
     for item in _iter_items(path, input_type, ignore_patterns):
@@ -200,15 +302,20 @@ def run_batch(
         except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)
             any_error = True
+            error_count += 1
             continue
         except Exception as exc:  # noqa: BLE001
             print(f"omen: batch analysis failed [{item}]: {exc}", file=sys.stderr)
             any_error = True
+            error_count += 1
             continue
 
         if report.gate_triggered:
             gate_tripped = True
-        line = json.dumps(report.to_dict())
+        report_dict = report.to_dict()
+        if batch_summary:
+            collected.append(report_dict)
+        line = json.dumps(report_dict)
         if output_file is None:
             print(line)
         else:
@@ -218,6 +325,11 @@ def run_batch(
         from .cli import write_output
 
         write_output("\n".join(buffered), output_file)
+
+    # Aggregate roll-up goes to stderr so the stdout JSONL stream stays clean
+    # for `jq`/tooling; it summarises the same dicts that were just streamed.
+    if batch_summary:
+        print(summarize_batch(collected, error_count), file=sys.stderr)
 
     if any_error:
         return 1

@@ -118,6 +118,7 @@ omen [--config PATH] \
 omen --batch <dir-or-list-file> \
      --input-type {sol,address} \
      [--ignore PATTERN[,PATTERN...]]   # skip vendored/third-party paths \
+     [--batch-summary]                 # aggregate roll-up to stderr after the JSONL \
      [--check ...] [--rpc-url URL] [--min-confidence ...] [--min-severity ...] \
      [--sort ...] [--limit N] [--fail-on ...] [-o/--output-file PATH]
 
@@ -138,6 +139,7 @@ omen --list-checks [--format {text,json}]
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
 - `-o` / `--output-file` — write the report to `PATH` instead of stdout. Default: stdout (the historical behaviour). Composes with every `--format`: in single-contract mode the file gets the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch` mode it gets the JSONL stream (one JSON object per contract). The write is **atomic** — content goes to a sibling `.tmp` and is renamed into place — so a crash mid-write never clobbers a previously good report with a truncated one. Parent directories are created as needed. The `--fail-on` exit code is unaffected: the gate trips the same whether the report went to a file or stdout. See [Writing the report to a file](#writing-the-report-to-a-file).
 - `--ignore` — in `--batch` mode, skip contract paths/addresses matching any of these comma-separated [glob](https://docs.python.org/3/library/fnmatch.html) patterns. A pattern matches the full path, any single path component, or — when it contains a `/` — any sub-path, so `--ignore node_modules,lib,test` drops vendored/third-party trees (e.g. an OpenZeppelin import tree) from a recursive directory scan or a list file without hand-pruning the input. Globs support `*`, `?`, and `[seq]`. Ignored items produce no output and no error. Default: ignore nothing. No effect in single `--contract` mode. See [Excluding paths from a batch scan](#excluding-paths-from-a-batch-scan).
+- `--batch-summary` — in `--batch` mode, print an aggregate roll-up to **stderr** after the JSONL stream: how many contracts were scanned / had findings / errored, the total findings broken down by severity (worst-first), and the worst-affected contracts. It answers "what did the whole-program scan find, overall?" without piping the JSONL through `jq`. The roll-up goes to stderr so the stdout JSONL stays machine-clean. No effect in single `--contract` mode. Default: off. See [Summarizing a batch scan](#summarizing-a-batch-scan).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Scoping a scan to specific classes
@@ -255,6 +257,56 @@ Notes:
   typo where a pattern was intended.
 - Like every other flag, `ignore` can be set in `omen.toml` (as a comma-list
   string) and overridden on the command line.
+
+### Summarizing a batch scan
+
+Every other batch lever — `--sort`, `--limit`, `--fail-on`, `--ignore` —
+operates *per contract*. After scanning a whole-program scope you still have N
+JSONL lines and have to aggregate them by hand (or with `jq`) to answer the
+first triage question: *how did the scan go, overall?* `--batch-summary` answers
+it directly, printing an aggregate roll-up to **stderr** after the JSONL stream:
+
+```bash
+omen --batch ./contracts --input-type sol --check all \
+     --ignore node_modules,lib,test --batch-summary > scan.jsonl
+```
+
+```text
+omen batch summary
+contracts: 42 scanned, 7 with findings, 1 errored
+findings: 11 total  [1 critical, 4 high, 3 medium, 3 low]
+top affected:
+  3 findings  contracts/Vault.sol
+  2 findings  contracts/Treasury.sol
+  2 findings  contracts/Bridge.sol
+  1 finding  contracts/Token.sol
+  1 finding  contracts/Staking.sol
+--fail-on gate: TRIPPED
+```
+
+The roll-up reports:
+
+- **contracts:** how many scanned cleanly, how many had at least one finding,
+  and how many errored (a per-item error does not abort the batch — it is
+  counted here and detailed on stderr).
+- **findings:** the total across the whole scope, broken down by severity
+  worst-first (only severities that actually occur are listed). The total uses
+  each contract's pre-`--limit` count, so a display cap never undercounts the
+  scope total.
+- **top affected:** up to the five contracts with the most findings, most-first,
+  so you know where to look before opening the JSON. Contracts with no findings
+  are never listed.
+- **--fail-on gate:** a `TRIPPED` line when `--fail-on` was set and at least one
+  contract reached the threshold (it mirrors the exit-`3` gate).
+
+It goes to **stderr**, never stdout, so the stdout JSONL stream stays a clean
+machine feed for `jq` and other tooling — you can redirect the JSONL to a file
+(or a pipe) and still read the human roll-up on your terminal, as in the example
+above. `--batch-summary` has no effect in single `--contract` mode (there is one
+contract — the per-contract `--format text` view already summarizes it); it is
+accepted there as a no-op so a committed `omen.toml` carrying `batch-summary =
+true` still works for single scans. Like every other flag it can be set in
+`omen.toml`.
 
 ### Listing the detection classes
 
@@ -733,8 +785,9 @@ The contract is deliberately small and predictable:
 - **Keys are flag names** with the leading `--` dropped; dashes and underscores
   are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
   the short alias for `output-file`. Settable keys: `contract`, `batch`,
-  `input-type`, `check`, `exclude-check`, `ignore`, `rpc-url`, `format`,
-  `min-confidence`, `min-severity`, `sort`, `limit`, `fail-on`, `output-file`.
+  `input-type`, `check`, `exclude-check`, `ignore`, `batch-summary`, `rpc-url`,
+  `format`, `min-confidence`, `min-severity`, `sort`, `limit`, `fail-on`,
+  `output-file`.
 - **Values are validated** against the same choices the CLI enforces, so a typo
   in the file is caught at load time with a clear, file-named error (exit `2`),
   not silently fed into the analyzer.
