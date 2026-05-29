@@ -1,4 +1,4 @@
-"""Output format tests: JSON, H1-markdown, and SARIF."""
+"""Output format tests: text, JSON, H1-markdown, and SARIF."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 
 from omen.analyzer import AnalysisReport
 from omen.findings import Evidence, Finding, Severity
-from omen.formats import render, to_h1md, to_json, to_sarif
+from omen.formats import render, to_h1md, to_json, to_sarif, to_text
 
 
 def _report() -> AnalysisReport:
@@ -52,6 +52,104 @@ def test_render_dispatch():
     assert render(_report(), "json").startswith("{")
     assert render(_report(), "h1md").startswith("#")
     assert render(_report(), "sarif").startswith("{")
+    assert render(_report(), "text").startswith("omen ")
+
+
+# --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
+
+
+def test_text_has_header_summary_and_finding_line():
+    text = to_text(_report())
+    lines = text.splitlines()
+    # header line 1: tool/version/origin
+    assert lines[0].startswith("omen ")
+    assert "x.bin" in lines[0]
+    # input/checks line
+    assert "input: bytecode" in text
+    assert "checks: suicidal" in text
+    # summary line with per-severity count
+    assert "findings: 1" in text
+    assert "1 high" in text
+    # finding line: index, upper-cased severity, category, confidence
+    finding_line = next(l for l in lines if l.lstrip().startswith("1."))
+    assert "HIGH" in finding_line
+    assert "suicidal" in finding_line
+    assert "[high]" in finding_line  # confidence in brackets
+
+
+def test_text_bytecode_finding_shows_opcode_offset():
+    # _report() is a bytecode finding with an opcode at offset 16 (0x10).
+    text = to_text(_report())
+    assert "@0x10" in text
+
+
+def test_text_source_finding_shows_source_location():
+    text = to_text(_source_report())
+    # source mappings from _source_report(): Vuln.sol#12-18 and Vuln.sol#25
+    assert "Vuln.sol#12-18" in text
+    assert "Vuln.sol#25" in text
+
+
+def test_text_summary_is_worst_first_and_counts_each_severity():
+    # _source_report() has one high and one medium finding.
+    text = to_text(_source_report())
+    summary = next(l for l in text.splitlines() if l.startswith("findings:"))
+    assert "1 high" in summary
+    assert "1 medium" in summary
+    # worst-first ordering inside the summary: high appears before medium.
+    assert summary.index("1 high") < summary.index("1 medium")
+
+
+def test_text_finding_lines_are_one_per_finding_in_report_order():
+    report = _source_report()
+    text = to_text(report)
+    numbered = [l for l in text.splitlines() if l.lstrip()[:2] in ("1.", "2.")]
+    assert len(numbered) == 2
+    # first finding line is the high (access-control), second the medium.
+    assert "access-control" in numbered[0]
+    assert "tx-origin" in numbered[1]
+
+
+def test_text_empty_report_says_no_findings():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    text = to_text(report)
+    assert "findings: 0" in text
+    assert "none" in text  # empty summary reads "none"
+    assert "No findings" in text
+
+
+def test_text_reports_limit_truncation_like_h1md():
+    # A report where --limit dropped findings: total > shown.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["all"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:suicidal",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#1-2"]),
+            )
+        ],
+        total_findings=5,
+    )
+    text = to_text(report)
+    assert "1 of 5" in text
+    assert "--limit" in text
 
 
 def _source_report() -> AnalysisReport:

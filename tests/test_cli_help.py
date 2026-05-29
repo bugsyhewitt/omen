@@ -43,6 +43,40 @@ def test_help_lists_check_choices():
 def test_help_lists_format_choices():
     text = _help_text()
     assert "json" in text and "h1md" in text and "sarif" in text
+    # text format (POST_V01 Rotation 2, R2.6) is a scan output choice too.
+    assert "text" in text
+
+
+def test_text_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format text is exercisable in CI.
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "text",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # text output is the compact terminal view, not JSON.
+    assert not out.lstrip().startswith("{")
+    assert out.startswith("omen ")
+    assert "findings:" in out
+    assert "suicidal" in out
+    assert "HIGH" in out
 
 
 def test_cli_help_runs_as_subprocess():

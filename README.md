@@ -105,7 +105,7 @@ omen --contract <path-or-address> \
      --input-type {sol,vyper,bytecode,address} \
      --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,overflow,weak-randomness,all} \
      [--rpc-url URL] \
-     [--format {json,h1md,sarif}] \
+     [--format {json,text,h1md,sarif}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
      [--sort {severity,none}] \
@@ -119,7 +119,7 @@ omen --list-checks [--format {text,json}]
 - `--input-type` — how to interpret `--contract`.
 - `--check` — which class to scan for (`all` runs every class). Default: `all`.
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
-- `--format` — `json` (machine-readable, default), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
+- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
@@ -428,6 +428,37 @@ than returning a silently-empty report.
   ]
 }
 ```
+
+### Text output
+
+`--format text` emits a compact, human-readable terminal view — the "what did
+omen find, at a glance" read for running omen interactively instead of piping it
+into another tool. It is a one-line header (origin + checks), a per-severity
+count summary, and one line per finding: index, severity, category, confidence,
+and where to look (a source location in source mode, or an opcode offset in
+bytecode/address mode). Findings come out in the report's order, so under the
+default `--sort severity` the worst, most-confident leads sit at the top. The
+summary respects `--limit` truncation, showing `top N of M shown` when a cap
+dropped findings.
+
+```bash
+omen --contract tests/fixtures/compiled.bin \
+     --input-type bytecode --check all --format text
+```
+
+```text
+omen 0.1.0 — tests/fixtures/compiled.bin
+input: bytecode  checks: prodigal, suicidal, greedy, reentrancy, access-control, tx-origin, delegatecall, upgrade, overflow, weak-randomness
+findings: 2  [2 high]
+
+ 1. HIGH          suicidal [high]  @0x3
+ 2. HIGH          reentrancy [low]  @0x2
+```
+
+It is a pure formatter — it never re-orders or re-filters findings — so it
+composes with `--min-severity`/`--min-confidence`, `--sort`, and `--limit`
+exactly as the other formats do. (In `--batch` mode omen always emits JSONL
+regardless of `--format`, so `text` applies to single-contract scans.)
 
 ### SARIF output (CI / GitHub code scanning)
 

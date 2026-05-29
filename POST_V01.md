@@ -534,3 +534,51 @@ land.
 > high-severity lead blocks the merge. It completes the
 > filter → sort → cap → gate pipeline and pairs directly with the existing SARIF
 > story — annotate *and* fail, the two halves of a security check in CI.
+
+---
+
+### R2.6. `--format text` compact terminal output
+
+**Rank: 6 (Rotation 2) — zero-dependency presentation/readability layer**
+
+> **STATUS: ✅ IMPLEMENTED (R14, 2026-05-28).** `omen --format text` renders a
+> scan as a compact, human-readable terminal view: a one-line header (tool
+> version + origin), an `input:`/`checks:` line, a per-severity count summary
+> (worst-first, e.g. `[2 high, 1 medium]`), then one line per finding — index,
+> width-padded upper-cased severity, category, confidence in brackets, and where
+> to look (the first source mapping in source mode, or `@0x<offset>` in
+> bytecode/address mode). It is the presentation complement to the Rotation 2
+> *triage pipeline* (filter → sort → cap → gate): once `--min-severity` /
+> `--min-confidence` decide which findings survive, `--sort` orders them
+> worst-first, and `--limit` caps them, an analyst running omen interactively
+> wants a glanceable summary rather than a JSON blob, a HackerOne markdown body,
+> or a SARIF document. Built the same zero-dependency way as the R6 SARIF
+> formatter: a pure `to_text()` in `formats.py` (plus `_severity_summary()` and
+> `_finding_line()` helpers) dispatched by `render`, reusing `SEVERITY_ORDER`
+> from `findings.py` for the worst-first summary ordering. It is a pure formatter
+> over `report.findings` — it never re-orders or re-filters, so it composes with
+> all three triage levers and honours the same `--limit` truncation accounting as
+> the h1md format (`findings: N of M (top N shown; --limit)`). The CLI `--format`
+> choice list already included `text` (it was the `--list-checks` default); R14
+> extends it to scan output, so a scan with `--format text` now renders the
+> terminal view instead of being an inert choice. `--batch` mode still always
+> emits JSONL regardless of `--format` (unchanged), so `text` applies to
+> single-contract scans. Tests in `tests/test_formats.py` (`test_text_*` + the
+> `render` dispatch case: header/summary/finding-line shape, bytecode
+> opcode-offset display, source-location display, worst-first summary,
+> one-line-per-finding in report order, empty-report "none"/"No findings", and
+> `--limit` "N of M" truncation) and `tests/test_cli_help.py` (format-choice
+> surface + a bytecode end-to-end subprocess run that needs no compiler); README
+> "Text output" section documents it with a sample. Pure formatter change — no
+> analysis-path, detector, or dependency changes, so it runs offline / in CI / on
+> a fresh checkout with no compiler installed.
+>
+> **Why:** Rotation 2 R2.1–R2.5 built the full triage *logic* surface — list the
+> classes, filter by severity/confidence, sort worst-first, cap to top-N, gate
+> CI — but omen's three scan output formats were all *machine/handoff* targets:
+> JSON for tooling, h1md for a HackerOne submission, SARIF for code-scanning
+> ingestion. The one audience left unserved was the analyst at a terminal who
+> just ran a scan and wants to read the result *now*, worst-first, without piping
+> through `jq` or opening a SARIF viewer. `--format text` closes that gap: it is
+> the human-readable read of exactly the findings the triage pipeline produced,
+> the presentation sibling to the SARIF/JSON machine formats.
