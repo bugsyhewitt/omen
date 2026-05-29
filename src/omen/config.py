@@ -83,11 +83,15 @@ _INT_KEYS = frozenset({"limit", "parallel"})
 # counts above — so a fractional file value like ``timeout = 2.5`` is accepted;
 # TOML ints (``timeout = 30``) are also accepted and coerced to float.
 _FLOAT_KEYS = frozenset({"timeout"})
-# ``output_file`` and ``baseline`` are path strings. ``baseline`` (POST_V01) is
-# the known-good omen report whose findings a scan suppresses, so a committed
-# omen.toml carrying ``baseline = "omen-baseline.json"`` makes "fail only on new
-# findings" the default for every CI invocation.
-_PATH_KEYS = frozenset({"output_file", "baseline"})
+# ``output_file``, ``baseline``, and ``sarif_baseline`` are path strings.
+# ``baseline`` (POST_V01) is the known-good omen report whose findings a scan
+# suppresses, so a committed omen.toml carrying ``baseline = "omen-baseline.json"``
+# makes "fail only on new findings" the default for every CI invocation.
+# ``sarif_baseline`` (POST_V01 R3.3) is the analogous known-good report whose
+# fingerprints drive the SARIF per-result baselineState annotation, so a
+# committed ``sarif-baseline = "omen-baseline.json"`` makes "mark pre-existing
+# alerts unchanged" the default for a code-scanning SARIF workflow.
+_PATH_KEYS = frozenset({"output_file", "baseline", "sarif_baseline"})
 
 # ``batch_summary`` is a boolean flag (the --batch-summary store_true option,
 # POST_V01 R2.12). TOML true/false arrive as Python bool, so the file form is

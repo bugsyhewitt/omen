@@ -1281,3 +1281,70 @@ land.
 > heavier, format-coupled surface for a workflow `--baseline` + the existing SARIF
 > *output* already mostly cover. It remains the natural R3.3 candidate if a team
 > needs GitHub-code-scanning-native suppression specifically.
+
+### R3.3. `--sarif-baseline` SARIF-native suppression
+
+**Rank: 1 (Rotation 26) — the GitHub-code-scanning-native complement to `--baseline`**
+
+> **STATUS: ✅ IMPLEMENTED (R26, 2026-05-29).** `--sarif-baseline PATH`
+> annotates each result in a `--format sarif` document with a SARIF-native
+> [`baselineState`](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html#_Toc34317648):
+> `"unchanged"` when the finding's fingerprint is already in `PATH` (a known,
+> pre-existing issue) and `"new"` when it is not (introduced since). This is the
+> R3.2 candidate deferred in R25's reasoning above, taken in the *value-dense*
+> interpretation the architecture invited: it reuses the **exact R3.1
+> fingerprint primitive** (`finding_fingerprint` — category + detector +
+> contract + location, excluding severity/wording) loaded by the existing
+> `load_baseline_fingerprints`, and annotates omen's own SARIF *output* rather
+> than parsing SARIF *input*. No SARIF result-matching engine, no new
+> dependency, no format-coupled input parser — the heavier surface R25 flagged
+> is sidestepped while still delivering the GitHub-Advanced-Security-native
+> suppression the candidate was about.
+>
+> The contrast with `--baseline` (R3.1) is the whole point and is deliberate:
+> `--baseline` *drops* known findings before they are emitted (so they vanish
+> from the report and the `--fail-on` gate); `--sarif-baseline` *keeps every
+> result* and tags it, leaving the suppression to GitHub (which folds
+> `unchanged` results into its pre-existing-alert view). Consequently
+> `--sarif-baseline` does **not** alter the `--fail-on` exit code — a
+> baselined-`unchanged` high finding still trips `--fail-on high` (exit 3),
+> because nothing was dropped. The two are complementary and composable.
+>
+> **Surface.** `to_sarif(report, *, baseline=None)` gains the optional
+> fingerprint set and writes `result["baselineState"]` only when it is not
+> `None` (so the no-flag SARIF output is byte-for-byte unchanged); `render`
+> grows a `sarif_baseline` keyword that it threads only to the SARIF branch
+> (ignored for text/json/h1md, which have no `baselineState` analogue). The CLI
+> adds `--sarif-baseline PATH`, validated up front: it is a usage error (exit 2)
+> with anything but `--format sarif`, a usage error under `--batch` (batch emits
+> JSONL, not a SARIF document), and a usage error for a missing/unreadable/
+> non-JSON baseline — all surfaced before any compiler/network work, consistent
+> with `--baseline`. `sarif_baseline` joins `_PATH_KEYS` in `config.py`, so a
+> committed `sarif-baseline = "omen-baseline.json"` makes the annotation the
+> default for a code-scanning workflow. Pure stdlib; the loader imports only
+> `json`. Tests in `tests/test_sarif_baseline.py` (17 cases): formatter — no
+> baseline omits the field, empty baseline marks all `new`, known→`unchanged`/
+> fresh→`new`, severity-override survives, output shape unchanged but for the
+> one added key, empty report valid; render threading — sarif gets it, other
+> formats ignore it; CLI — help, parse/default-None, requires-sarif-format,
+> rejects-batch, missing/non-JSON usage errors; end-to-end against the
+> mixed-confidence bytecode fixture — self-baseline marks all `unchanged`,
+> partial baseline marks the new finding `new`, and the `--fail-on` gate still
+> trips (the explicit `--baseline` contrast). README gains a "SARIF-native
+> suppression with a baseline" section plus usage-block, flag-list, and
+> config-key mentions.
+>
+> **Why (R26 reasoning):** R24/R25 closed the temporal triage loop for omen's
+> *own* formats — `--baseline` (scan-time suppression) and `--diff` (offline
+> delta). The one audience that still lacked a native lever was the
+> code-scanning audience the R6 SARIF output already targets: uploading SARIF
+> surfaces every finding as an alert, and on a legacy codebase that means the
+> first upload buries the team in pre-existing alerts with no in-platform way to
+> distinguish them from regressions. `--baseline` can drop them, but dropping
+> them also hides them from the GitHub UI entirely — you lose the audit trail
+> and the "still open, but known" status. `baselineState` is the format's own
+> answer: GitHub reads it to keep pre-existing alerts visible-but-folded while
+> flagging new ones on the PR. Shipping it makes omen behave like every other
+> code-scanning tool in the same pipeline, and it was the cheapest remaining
+> R3.x gap to close cleanly — one optional formatter parameter, one CLI flag,
+> one config key, all riding rails R3.1 already laid.

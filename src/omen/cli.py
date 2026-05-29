@@ -399,6 +399,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--sarif-baseline",
+        default=None,
+        metavar="PATH",
+        help=(
+            "annotate SARIF output with a per-result baselineState (POST_V01 "
+            "R3.3): the SARIF-native, GitHub-code-scanning suppression lever. "
+            "PATH is a previously-saved omen JSON report (single-contract, a JSON "
+            "array, or a --batch JSONL stream) used as a known-good baseline. "
+            "Every SARIF result is tagged baselineState 'unchanged' if its "
+            "finding fingerprint (category + detector + contract + location, the "
+            "same identity --baseline uses) is already in PATH, or 'new' if it "
+            "was introduced since. Unlike --baseline, which *drops* known "
+            "findings from the report, --sarif-baseline *keeps* every result so "
+            "GitHub Advanced Security can fold the pre-existing ('unchanged') "
+            "alerts into its baseline view while surfacing the 'new' ones — the "
+            "native suppression a code-scanning workflow expects. Requires "
+            "--format sarif and single --contract mode (batch emits JSONL, not "
+            "SARIF); a missing/unreadable/non-JSON baseline is a usage error."
+        ),
+    )
+    parser.add_argument(
         "--ignore",
         default=None,
         metavar="PATTERN[,PATTERN...]",
@@ -601,6 +622,29 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
+    # Validate --sarif-baseline up front (POST_V01 R3.3): it only makes sense for
+    # SARIF output in single-contract mode (batch emits JSONL, never a SARIF
+    # document, so there is no per-result baselineState to annotate). Surface a
+    # misuse as a usage error (exit 2) here, then load the baseline so a
+    # missing/unreadable/non-JSON file is also an exit-2 error before any
+    # compiler/network work — consistent with --baseline above. The fingerprint
+    # set computed here is reused for the render below (single mode).
+    sarif_baseline_fps: set[str] | None = None
+    if args.sarif_baseline is not None:
+        if args.batch is not None:
+            parser.error(
+                "--sarif-baseline applies to single --contract SARIF output, "
+                "not --batch (batch emits JSONL, not a SARIF document)"
+            )
+        if args.format != "sarif":
+            parser.error("--sarif-baseline requires --format sarif")
+        from .findings import load_baseline_fingerprints
+
+        try:
+            sarif_baseline_fps = load_baseline_fingerprints(args.sarif_baseline)
+        except ValueError as exc:
+            parser.error(str(exc))
+
     # --- Batch mode ---
     if args.batch is not None:
         from .batch import run_batch
@@ -655,7 +699,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"omen: analysis failed: {exc}", file=sys.stderr)
         return 1
 
-    write_output(render(report, args.format), args.output_file)
+    write_output(
+        render(report, args.format, sarif_baseline=sarif_baseline_fps),
+        args.output_file,
+    )
 
     # Exit code convention: 0 = ran cleanly. Findings still mean a clean run;
     # callers parse the JSON to act on findings. (Bounty workflows want the
