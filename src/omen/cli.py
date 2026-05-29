@@ -1,6 +1,7 @@
 """omen command-line interface.
 
-    omen --contract <path-or-address> --input-type {sol,vyper,bytecode,address}
+    omen [--config PATH] --contract <path-or-address>
+         --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
          [--rpc-url URL] [--format {json,text,h1md,sarif}]
@@ -76,6 +77,70 @@ def _positive_int(value: str) -> int:
     return n
 
 
+def _explicitly_set_dests(
+    parser: argparse.ArgumentParser, argv: list[str] | None
+) -> set[str]:
+    """Return the set of argparse dests the user actually passed on *argv*.
+
+    We cannot tell "user typed --sort severity" from "argparse filled the
+    default severity" by inspecting the parsed Namespace — both look identical.
+    So we re-parse *argv* against a clone of *parser* whose every argument
+    defaults to ``argparse.SUPPRESS``; suppressed defaults are omitted from the
+    Namespace, so whatever *is* present was set on the command line. This is the
+    standard way to distinguish "passed" from "defaulted" without intercepting
+    the parse, and it keeps the user-facing parser (help text, error messages)
+    completely unchanged.
+
+    Only used to decide which slots a ``--config`` value may fill; CLI flags
+    always win over the file.
+    """
+    sentinel = argparse.ArgumentParser(add_help=False)
+    # Recreate every optional/positional action with a suppressed default. Skip
+    # the help and version actions (they exit) and any positionals (omen has
+    # none). Mutually-exclusive grouping is irrelevant here — we never trigger
+    # the group's required check because the sentinel parse mirrors the real one.
+    for action in parser._actions:
+        if isinstance(
+            action, (argparse._HelpAction, argparse._VersionAction)
+        ):
+            continue
+        if not action.option_strings:
+            continue
+        kwargs: dict[str, Any] = {"dest": action.dest, "default": argparse.SUPPRESS}
+        if isinstance(action, argparse._StoreTrueAction):
+            kwargs["action"] = "store_true"
+        else:
+            # Re-accept a value without re-validating type/choices (the real
+            # parser already does that); we only care about presence.
+            kwargs["nargs"] = "?"
+        try:
+            sentinel.add_argument(*action.option_strings, **kwargs)
+        except argparse.ArgumentError:  # pragma: no cover - defensive
+            continue
+    ns, _ = sentinel.parse_known_args(argv)
+    return set(vars(ns))
+
+
+def _apply_config(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    explicit: set[str],
+) -> None:
+    """Fill *args* slots from *config* that the user did not set on the CLI.
+
+    Precedence (highest first): explicit CLI flag, then config-file value, then
+    the argparse default already sitting in *args*. A config key only writes into
+    a dest that is **not** in *explicit*, so passing a flag on the command line
+    always overrides the file. Keys the parser does not own are ignored here
+    (``load_config`` already rejected unknown keys, so this is belt-and-braces).
+    """
+    for key, value in config.items():
+        if key in explicit:
+            continue
+        if hasattr(args, key):
+            setattr(args, key, value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omen",
@@ -88,6 +153,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version", action="version", version=f"omen {__version__}"
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "load a TOML config file that sets default values for the other "
+            "flags (POST_V01 R2.10). Keys are flag names with the leading '--' "
+            "dropped (dashes or underscores both work), e.g. min-severity, "
+            "output-file, check; values are validated against the same choices "
+            "the flags enforce. Keys may live at the top level or under an "
+            "[omen] table. CLI flags always override the file, so a committed "
+            "omen.toml shrinks repeated invocations while staying overridable "
+            "ad hoc. Pure stdlib (tomllib); no dependency."
+        ),
     )
     parser.add_argument(
         "--list-checks",
@@ -250,6 +330,20 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # --- --config: TOML defaults for the other flags (POST_V01 R2.10) ---------
+    # Load the file (if any) and fill in only the flags the user did *not* pass
+    # on the command line. CLI flags always win; the file is a default source
+    # that sits above the built-in defaults. --config's own path can only come
+    # from the CLI (a config file cannot set the config path).
+    if args.config is not None:
+        from .config import ConfigError, load_config
+
+        try:
+            cfg = load_config(args.config)
+        except ConfigError as exc:
+            parser.error(str(exc))
+        _apply_config(args, cfg, _explicitly_set_dests(parser, argv))
 
     # --- --list-checks: introspection action, runs with no target/compiler ---
     if args.list_checks:

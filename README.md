@@ -101,7 +101,8 @@ need **no** compiler at all.
 ## Usage
 
 ```
-omen --contract <path-or-address> \
+omen [--config PATH] \
+     --contract <path-or-address> \
      --input-type {sol,vyper,bytecode,address} \
      --check CATEGORY[,CATEGORY...]   # a category, 'all', or a comma-separated list \
      [--exclude-check CATEGORY[,CATEGORY...]]   # inverse selector; not 'all' \
@@ -117,6 +118,7 @@ omen --contract <path-or-address> \
 omen --list-checks [--format {text,json}]
 ```
 
+- `--config` — load a TOML config file that sets **default** values for the other flags. Lets a repo commit a single `omen.toml` and shrink long, repeated invocations. CLI flags always override the file. Pure stdlib (`tomllib`); no dependency. See [Config files (`omen.toml`)](#config-files-omentoml).
 - `--contract` — a path to a `.sol` source file, a path to a `.vy` (Vyper) source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
 - `--input-type` — how to interpret `--contract`.
 - `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
@@ -643,6 +645,57 @@ so a CI step can both fail the build and archive the report artifact in one run.
 # fail the PR on a high lead AND save the SARIF artifact for code scanning
 - run: omen --contract MyContract.sol --input-type sol --check all --fail-on high --format sarif -o omen.sarif
 ```
+
+### Config files (`omen.toml`)
+
+After a dozen flags grew up around the detector roster, a CI invocation that
+scopes a scan, filters confidence, sorts, caps, gates, and redirects output is a
+long one-liner that has to be copied into every pipeline step. `--config PATH`
+loads a TOML file whose keys set **default** values for those flags, so a repo
+can commit one `omen.toml` and shrink every invocation:
+
+```toml
+# omen.toml — defaults for this repo's scans
+[omen]
+input-type   = "sol"
+check        = "access-control,delegatecall,upgrade"
+min-severity = "high"
+sort         = "severity"
+fail-on      = "high"
+format       = "sarif"
+output-file  = "omen.sarif"
+```
+
+```bash
+# the whole config above, applied — only the target is left on the command line
+omen --config omen.toml --contract Token.sol
+
+# a config can even drive the target itself (contract + input-type keys),
+# reducing the invocation to just the config
+omen --config omen.toml
+```
+
+The contract is deliberately small and predictable:
+
+- **Flat name→value map.** All keys live at the top level *or* under an `[omen]`
+  table (both accepted; when an `[omen]` table is present its keys are used, so
+  `omen.toml` can also be a section inside a shared config without bleed-through).
+  No nested sub-tables, no profiles, no per-category overrides.
+- **Keys are flag names** with the leading `--` dropped; dashes and underscores
+  are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
+  the short alias for `output-file`. Settable keys: `contract`, `batch`,
+  `input-type`, `check`, `exclude-check`, `rpc-url`, `format`, `min-confidence`,
+  `min-severity`, `sort`, `limit`, `fail-on`, `output-file`.
+- **Values are validated** against the same choices the CLI enforces, so a typo
+  in the file is caught at load time with a clear, file-named error (exit `2`),
+  not silently fed into the analyzer.
+- **CLI flags always win.** Precedence is: explicit CLI flag > config-file value
+  > built-in default. The file only fills slots you did not set on the command
+  line, so `--config omen.toml --fail-on never` overrides a `fail-on = "high"` in
+  the file ad hoc.
+
+Pure stdlib — `tomllib` ships with Python 3.11+ and omen requires 3.13+ — so
+`--config` adds no dependency and runs offline / in CI / on a fresh checkout.
 
 ---
 
