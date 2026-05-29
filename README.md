@@ -104,6 +104,7 @@ need **no** compiler at all.
 omen --contract <path-or-address> \
      --input-type {sol,vyper,bytecode,address} \
      --check CATEGORY[,CATEGORY...]   # a category, 'all', or a comma-separated list \
+     [--exclude-check CATEGORY[,CATEGORY...]]   # inverse selector; not 'all' \
      [--rpc-url URL] \
      [--format {json,text,h1md,sarif}] \
      [--min-confidence {low,medium,high}] \
@@ -118,6 +119,7 @@ omen --list-checks [--format {text,json}]
 - `--contract` — a path to a `.sol` source file, a path to a `.vy` (Vyper) source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
 - `--input-type` — how to interpret `--contract`.
 - `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
+- `--exclude-check` — remove one or more categories from the `--check` set (the inverse selector). Accepts a single category or a **comma-separated list** (not `all`). Pairs with the default `--check all` to express "every class except these" — e.g. `--exclude-check greedy,prodigal` to drop the two noisiest bytecode heuristics. Excluding a class `--check` did not select is a no-op; excluding *every* selected class is a usage error (exit `2`). Default: exclude nothing. Applies in single-contract and `--batch` mode alike. See [Excluding classes from a scan](#excluding-classes-from-a-scan).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
 - `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
@@ -159,6 +161,47 @@ The list composes with everything downstream: `--min-severity`,
 `--min-confidence`, `--sort`, `--limit`, and `--fail-on` all apply to the
 findings the scoped check surfaces. In `--batch` mode the same `--check` list
 applies to every contract.
+
+### Excluding classes from a scan
+
+`--exclude-check` is the inverse of `--check`: it **removes** one or more
+categories from whatever `--check` resolved to. Where a comma-separated
+`--check` says "scan *these* classes", `--exclude-check` pairs with the default
+`--check all` to say "scan *everything except* these" — which is shorter than
+enumerating the other eight when you only want to drop a couple.
+
+```bash
+# Scan everything except the two noisiest bytecode heuristics.
+omen --contract Contract.bin --input-type bytecode \
+     --check all --exclude-check greedy,prodigal
+
+# Scope to a cluster, then carve one class back out.
+omen --contract Proxy.sol --input-type sol \
+     --check access-control,delegatecall,upgrade \
+     --exclude-check upgrade
+```
+
+Resolution rules:
+
+- The exclusion is applied *after* `--check` resolves, and it preserves the
+  `--check` order — the surviving categories run in the same order they would
+  have without the exclusion. The report's `checks` field echoes that surviving
+  set.
+- `--exclude-check` accepts a single category or a comma-separated list, with
+  the same whitespace/trailing-comma tolerance and dedupe as `--check`. It does
+  **not** accept `all` — excluding every class would scan nothing, so that is a
+  usage error.
+- Excluding a category that `--check` did not select is a **no-op**, not an
+  error, so the same exclude list can be reused across scans with different
+  `--check` scopes (`--check reentrancy --exclude-check suicidal` simply runs
+  `reentrancy`).
+- Excluding *every* selected category leaves nothing to scan — that is a usage
+  error (exit code `2`) rather than a silently empty report.
+- An unknown category in the exclude list is a usage error (exit code `2`) that
+  names the offender.
+
+The surviving set composes with everything downstream exactly as `--check`
+does, and in `--batch` mode the same exclusion applies to every contract.
 
 ### Listing the detection classes
 

@@ -647,11 +647,74 @@ land.
 
 ---
 
-> **Rotation 2 status (as of R15, 2026-05-28).** R2.1–R2.7 shipped. The Rotation 2
+### R2.8. `--exclude-check` inverse category selector
+
+**Rank: 8 (Rotation 2) — zero-dependency detection-surface selection (inverse)**
+
+> **STATUS: ✅ IMPLEMENTED (R16, 2026-05-29).** `--exclude-check
+> CATEGORY[,CATEGORY...]` removes one or more categories from whatever `--check`
+> resolved to — the inverse of the R2.7 comma-list. It accepts a single category
+> or a comma-separated list (with the same whitespace/trailing-comma tolerance
+> and first-seen-order dedupe as `--check`), but **not** the keyword `all`
+> (excluding every class would scan nothing, so `--exclude-check all` is a usage
+> error). The exclusion is applied *after* `--check` resolves and preserves the
+> `--check` order, so the surviving categories run in the same order they would
+> have without it; the report's `checks` field echoes the surviving set.
+> **Two deliberate semantics:** (a) excluding a category `--check` did not select
+> is a **no-op**, not an error (so an exclude list can be reused across scans with
+> different `--check` scopes — `--check reentrancy --exclude-check suicidal`
+> simply yields `[reentrancy]`); (b) excluding *every* selected category leaves
+> nothing to scan, which is a usage error (exit `2`) rather than a silently
+> always-empty report. Built the same zero-dependency way as R2.7: the R2.7
+> `resolve_checks()` parsing logic was factored into a shared `parse_categories()`
+> primitive in `analyzer.py` (parameterised by an `allow_all` flag — `--check`
+> allows `all`, `--exclude-check` does not), and `resolve_checks()` gained an
+> optional `exclude` argument that parses the exclude spec and subtracts it,
+> raising on an empty result. The CLI adds `--exclude-check` (no argparse
+> `choices`, mirroring R2.7 — validation runs through `resolve_checks()` in
+> `main()` and surfaces a bad value as an exit-`2` usage error) and forwards it
+> through `analyze()` and `run_batch()` (uniform across a batch). Tests in
+> `tests/test_exclude_check.py` (parse_categories primitive incl. allow_all
+> on/off, `all`-rejection on the exclude side, unknown-member and empty
+> rejection; resolve_checks subtraction incl. no-exclude backward-compat,
+> exclude-one/list-from-all, `--check`-order preservation, no-op on unselected,
+> empty-set rejection, exclude-all-from-all rejection, `all`-keyword rejection,
+> unknown-member naming; CLI surface incl. help text, argparse acceptance,
+> default `None`, exit-`2` on unknown member / on `all` / on excluding every
+> selected class; bytecode-mode end-to-end subprocess runs proving an exclusion
+> removes exactly the named class and that a no-op exclusion keeps the rest).
+> README "Excluding classes from a scan" section documents it; the usage block
+> and flag list mention it. Pure input-selection change — no analysis-path,
+> detector, or dependency changes, and the comma-list resolution imports nothing
+> heavy, so it runs offline / in CI / on a fresh checkout with no compiler
+> installed.
+>
+> **Why (R16 research-lap reasoning):** R2.7 closed the *positive* input axis —
+> scope a scan *to* a comma-list of classes. The R15 lap explicitly named the
+> `--exclude` inverse as the leading remaining candidate, and it is the natural,
+> highest-value-per-token next step: it lives on the same input axis, reuses the
+> exact `resolve_checks()` seam (refactored, not duplicated), adds no module and
+> no dependency, and is fully backward compatible (omitting it changes nothing).
+> The two selectors are complementary across the common real workflows: a
+> comma-list `--check` is the right tool when the relevant surface is a small
+> named cluster (the proxy/admin trio), and `--exclude-check` is the right tool
+> when the relevant surface is "almost everything" — e.g. a whole-program scan
+> minus the two low-confidence bytecode heuristics (`greedy`, `prodigal`) that
+> dominate triage noise — where enumerating the other eight classes by hand would
+> be tedious and error-prone. Together they let a bounty hunter express the
+> detection surface from either direction, whichever is shorter for the scope at
+> hand. Among the remaining unshipped candidates (per-category severity
+> overrides, a config-file form of the now-many flags), the inverse selector is
+> the cheapest and the one already flagged as next, so it ships first.
+
+---
+
+> **Rotation 2 status (as of R16, 2026-05-29).** R2.1–R2.8 shipped. The Rotation 2
 > theme has been the triage/UX surface around the now-ten-class detector roster:
 > R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →
-> human-readable render) and R2.7 closed the *input* axis (scope which classes
-> run). A fresh full threat-landscape re-scan + re-ranking is still owed before
-> Rotation 2 is declared complete; remaining un-ranked candidates noted during the
-> R15 lap include a `--exclude` inverse of the `--check` list, per-category
-> severity overrides, and a config-file form of the now-many CLI flags.
+> human-readable render) and R2.7–R2.8 closed the *input* axis from both
+> directions — scope a scan *to* a comma-list of classes (`--check`) or *exclude*
+> a comma-list from it (`--exclude-check`). A fresh full threat-landscape re-scan
+> + re-ranking is still owed before Rotation 2 is declared complete; remaining
+> un-ranked candidates noted during the R16 lap include per-category severity
+> overrides and a config-file (`.omenrc`) form of the now-many CLI flags.

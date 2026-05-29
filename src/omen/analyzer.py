@@ -39,30 +39,31 @@ from .sources import InputError, SourceInput, load_input
 from .vyper_env import require_vyper
 
 
-def resolve_checks(check: str) -> list[str]:
-    """Expand the --check value into a concrete list of categories.
+def parse_categories(value: str, *, allow_all: bool) -> list[str]:
+    """Parse a category spec into a concrete, deduped, validated list.
 
-    Accepts (POST_V01 Rotation 2, R2.7) a single category, the keyword ``all``,
-    or a comma-separated list of categories (e.g.
-    ``access-control,delegatecall,upgrade`` — the proxy/admin attack cluster).
-    The comma-list lets a bounty hunter scope a scan to exactly the detection
-    surface a given program needs in one run, instead of either accepting the
-    noise of ``all`` or running several single-category scans and merging them.
+    Shared parsing primitive behind both ``--check`` (POST_V01 Rotation 2, R2.7)
+    and ``--exclude-check`` (R2.8). A *value* is a single category, optionally the
+    keyword ``all`` (only when *allow_all* is set), or a comma-separated list of
+    categories. The two flags differ only in whether ``all`` is meaningful:
+    ``--check all`` is the obvious "every class", but ``--exclude-check all``
+    would scan nothing, so the exclude side forbids it.
 
     Resolution rules:
-      - ``all`` expands to every category, in ``CATEGORIES`` order. It may not be
-        combined with other names (``all,reentrancy`` is rejected as a mistake —
-        ``all`` already includes everything).
+      - ``all`` (only if *allow_all*) expands to every category, in ``CATEGORIES``
+        order. It may not be combined with other names (``all,reentrancy`` is
+        rejected as a mistake — ``all`` already includes everything).
       - A list is split on commas; surrounding whitespace and empty segments
         (e.g. a trailing comma) are ignored.
-      - Duplicates are removed while preserving first-seen order, so
-        ``reentrancy,reentrancy`` resolves to ``[reentrancy]`` and the order a
-        user lists classes in is the order they appear.
+      - Duplicates are removed while preserving first-seen order.
       - Every name must be a known category; an unknown name raises ``ValueError``
         naming the offender and listing the valid choices.
     """
-    raw = (check or "").strip()
-    if raw == "all":
+    flag = "--check" if allow_all else "--exclude-check"
+    choices = f"{', '.join(CATEGORIES)}" + (" or 'all'" if allow_all else "")
+
+    raw = (value or "").strip()
+    if allow_all and raw == "all":
         return list(CATEGORIES)
 
     # Split on commas, trim each segment, drop blanks (tolerates trailing/double
@@ -71,13 +72,17 @@ def resolve_checks(check: str) -> list[str]:
     names = [p for p in parts if p]
     if not names:
         raise ValueError(
-            f"--check requires at least one category; "
-            f"choose from {', '.join(CATEGORIES)} or 'all'"
+            f"{flag} requires at least one category; choose from {choices}"
         )
 
     # 'all' inside a list is ambiguous: it already covers everything, so combining
     # it with explicit names is almost certainly a mistake. Reject it plainly.
     if "all" in names:
+        if not allow_all:
+            raise ValueError(
+                f"{flag} does not accept 'all' (excluding every class would "
+                f"scan nothing); list the specific categories to exclude"
+            )
         if len(names) == 1:
             return list(CATEGORIES)
         raise ValueError(
@@ -89,12 +94,55 @@ def resolve_checks(check: str) -> list[str]:
     for name in names:
         if name not in CATEGORIES:
             raise ValueError(
-                f"unknown check {name!r}; choose from "
-                f"{', '.join(CATEGORIES)} or 'all'"
+                f"unknown check {name!r}; choose from {choices}"
             )
         if name not in resolved:  # dedupe, preserve first-seen order
             resolved.append(name)
     return resolved
+
+
+def resolve_checks(check: str, exclude: str | None = None) -> list[str]:
+    """Expand the --check value into a concrete list of categories.
+
+    Accepts (POST_V01 Rotation 2, R2.7) a single category, the keyword ``all``,
+    or a comma-separated list of categories (e.g.
+    ``access-control,delegatecall,upgrade`` — the proxy/admin attack cluster).
+    The comma-list lets a bounty hunter scope a scan to exactly the detection
+    surface a given program needs in one run, instead of either accepting the
+    noise of ``all`` or running several single-category scans and merging them.
+
+    *exclude* (POST_V01 Rotation 2, R2.8) is the inverse selector: a single
+    category or comma-separated list (``all`` is not accepted — excluding every
+    class would scan nothing) whose categories are removed from the resolved
+    ``--check`` set. It is the natural complement to the R2.7 comma-list: where a
+    program's relevant surface is "everything except the two noisy classes",
+    ``--check all --exclude-check greedy,prodigal`` expresses it directly instead
+    of having to enumerate the other eight. The subtraction preserves the
+    ``--check`` order, so the surviving categories run in the same order they
+    would have without the exclusion.
+
+    Excluding a category that ``--check`` did not select is a no-op (not an
+    error) — ``--check reentrancy --exclude-check suicidal`` simply yields
+    ``[reentrancy]`` — so an exclude list can be reused across scans with
+    different ``--check`` scopes. Excluding *every* selected category, however,
+    leaves nothing to scan, which is a usage error: omen refuses an empty check
+    set rather than silently producing an always-empty report.
+    """
+    resolved = parse_categories(check, allow_all=True)
+
+    if exclude is None or not str(exclude).strip():
+        return resolved
+
+    excluded = parse_categories(exclude, allow_all=False)
+    excluded_set = set(excluded)
+    remaining = [c for c in resolved if c not in excluded_set]
+    if not remaining:
+        raise ValueError(
+            f"--exclude-check {exclude!r} removes every selected category, "
+            f"leaving nothing to scan; drop a category from the exclusion or "
+            f"widen --check"
+        )
+    return remaining
 
 
 @dataclass
@@ -468,6 +516,7 @@ def analyze(
     sort: str = "severity",
     limit: int | str | None = None,
     fail_on: str | None = None,
+    exclude_check: str | None = None,
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
@@ -499,9 +548,15 @@ def analyze(
     severity, which the CLI maps onto a non-zero exit code so a pipeline step
     fails. The gate is evaluated over the filtered findings *before* the
     ``--limit`` cap, so a display cap can never hide a finding from the gate.
+
+    *exclude_check* (POST_V01 Rotation 2, R2.8) removes one or more categories
+    (a single name or comma-separated list; not ``all``) from the resolved
+    ``--check`` set — the inverse selector. ``None`` (the default) excludes
+    nothing. Excluding a category ``--check`` did not select is a no-op;
+    excluding every selected category is a usage error.
     """
     limit_n = parse_limit(limit)
-    checks = resolve_checks(check)
+    checks = resolve_checks(check, exclude_check)
     src = load_input(contract, input_type, rpc_url)
 
     if src.input_type in ("sol", "vyper"):

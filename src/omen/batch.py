@@ -67,6 +67,7 @@ def run_batch(
     sort: str = "severity",
     limit: int | str | None = None,
     fail_on: str | None = None,
+    exclude_check: str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -86,6 +87,10 @@ def run_batch(
     precedence — errors are exit 1 — because a failed scan is a stronger signal
     than a clean scan that found something.
 
+    *exclude_check* (POST_V01 Rotation 2, R2.8) is the inverse category selector,
+    forwarded to ``analyze`` for each item, so the same categories are removed
+    from the ``--check`` set uniformly across the batch.
+
     Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
     tripped on any item; otherwise 0.
     """
@@ -104,6 +109,7 @@ def run_batch(
                 sort=sort,
                 limit=limit,
                 fail_on=fail_on,
+                exclude_check=exclude_check,
             )
         except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
             print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)
