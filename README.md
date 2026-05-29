@@ -134,6 +134,10 @@ omen --diff <old-report.json> <new-report.json> \
      [--fail-on {never,…,critical}]    # gate on the *added* findings (exit 3) \
      [-o/--output-file PATH]
 
+omen --sarif-merge <report.json> [<report.json> ...] \
+     [--fail-on {never,…,critical}]    # gate on the merged findings (exit 3) \
+     [-o/--output-file PATH]           # always emits SARIF
+
 omen --list-checks [--format {text,json}]
 ```
 
@@ -158,6 +162,7 @@ omen --list-checks [--format {text,json}]
 - `--timeout` — in `--batch` mode, give each contract at most `SECONDS` of wall-clock analysis time (a positive number; fractional values like `2.5` are allowed). Default: no budget (each scan runs to completion, the historical behaviour). A contract whose scan overruns is **abandoned and recorded as a per-item error** — it counts toward the exit-`1` error tally and the `--batch-summary` error count, with a message to stderr — so one pathological contract (a hanging compiler, a runaway symbolic path) can't stall a whole-program scan of dozens-to-hundreds of contracts. Enforced on the same thread-pool seam as `--parallel`, so output, the `--fail-on` gate, the error count, and the summary all stay in deterministic **input order**. To actually make progress *past* a stuck contract, pair it with `--parallel >= 2` (a free worker); with the default single worker the budget still bounds each item but a stuck scan blocks the items queued behind it. No effect in single `--contract` mode. See [Bounding per-contract scan time](#bounding-per-contract-scan-time).
 - `--batch-summary` — in `--batch` mode, print an aggregate roll-up to **stderr** after the JSONL stream: how many contracts were scanned / had findings / errored, the total findings broken down by severity (worst-first), and the worst-affected contracts. It answers "what did the whole-program scan find, overall?" without piping the JSONL through `jq`. The roll-up goes to stderr so the stdout JSONL stays machine-clean. No effect in single `--contract` mode. Default: off. See [Summarizing a batch scan](#summarizing-a-batch-scan).
 - `--diff` — compare two previously-saved omen JSON reports and print the delta: findings **added** (in `NEW`, not `OLD`), **removed** (in `OLD`, not `NEW`), and the **unchanged** count. The temporal complement to `--baseline`: where `--baseline` *suppresses* known findings during a live scan, `--diff` *reports* what changed between two already-saved reports — a pure offline operation needing no contract, compiler, or network (like `--list-checks`). Each report may be a single-contract JSON, a JSON array of them, or a `--batch` JSONL stream. A finding's identity is its category + detector + contract + location, so a `--severity-override` re-stamp or a Slither wording change does not show up as churn. Honors `--format text` (default) or `--format json`, and `--fail-on` — which gates on the *added* findings (exit `3` when a newly-introduced finding reaches the chosen severity), the "fail the PR on regressions" CI move. A missing/unreadable/non-JSON report is a usage error (exit `2`). See [Diffing two reports](#diffing-two-reports).
+- `--sarif-merge` — consolidate two or more previously-saved omen JSON reports into a **single SARIF 2.1.0 document**. The spatial complement to `--diff`: where `--diff` reports the *delta* between two reports, `--sarif-merge` *unions* the findings of `N` reports into one code-scanning upload — the fix for a per-module CI matrix or a sharded scan that emits one report per run but needs one SARIF for GitHub Advanced Security (which takes one document per upload). Each `REPORT` may be a single-contract JSON, a JSON array of them, or a `--batch` JSONL stream. Findings shared across inputs are **deduplicated by fingerprint** (category + detector + contract + location, the same identity `--baseline`/`--diff`/`--sarif-baseline` use), so an overlapping contract is not double-counted; the output is worst-first and deterministic regardless of input order. A pure offline operation needing no contract, compiler, or network (like `--diff`/`--list-checks`). Output is **always SARIF** (an explicit `--format` is a usage error); honors `-o` and `--fail-on` — which gates on the merged, deduplicated findings (exit `3` when one reaches the chosen severity). A missing/unreadable/non-JSON report is a usage error (exit `2`). See [Merging reports into one SARIF upload](#merging-reports-into-one-sarif-upload).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Scoping a scan to specific classes
@@ -1017,6 +1022,55 @@ a Slither wording change does not show up as churn. The diff is deterministic
   is `omen --diff batch-before.jsonl batch-after.jsonl`.
 - A missing, unreadable, or non-JSON report is a usage error (exit `2`),
   surfaced before any work — a broken diff input fails loudly.
+
+### Merging reports into one SARIF upload
+
+`--diff` compares two reports along the *temporal* axis. `--sarif-merge` is the
+*spatial* complement: given `N` saved omen reports, it **unions their findings
+into one SARIF 2.1.0 document**. GitHub Advanced Security accepts one SARIF per
+upload, so a scan split across runs — a per-module CI matrix, a sharded
+`--parallel` sweep saved per shard, or one `-o` report per contract — otherwise
+means uploading `N` times (`N` separate "tools" in the code-scanning UI) or
+hand-stitching the JSON. `--sarif-merge` produces the single document. Like
+`--diff`/`--list-checks` it is a pure offline action — no contract, compiler,
+Slither, or network:
+
+```bash
+# Each CI shard scans part of the scope and saves its own report.
+omen --contract core/Vault.sol  --input-type sol --check all -o shard-core.json
+omen --contract token/Token.sol --input-type sol --check all -o shard-token.json
+omen --contract proxy/Proxy.sol --input-type sol --check all -o shard-proxy.json
+
+# Consolidate every shard into one SARIF document and upload it once.
+omen --sarif-merge shard-core.json shard-token.json shard-proxy.json -o omen.sarif
+# … then upload omen.sarif to GitHub code scanning (e.g. github/codeql-action/upload-sarif).
+```
+
+The merged document is identical in shape to a single-run `--format sarif`
+report — one `tool.driver` (omen), one rule per category, one result per finding
+— so it uploads exactly like one. Findings that appear in more than one input
+(an overlapping contract scanned by two shards, say) are **deduplicated by the
+same fingerprint** `--baseline`/`--diff`/`--sarif-baseline` use — category +
+detector + contract + location — so they are not double-counted. The result
+order is **worst-first then by fingerprint**, so the document is byte-stable
+regardless of input order or how each report listed its findings.
+
+`--sarif-merge` composes with the rest of the surface:
+
+- Output is **always SARIF** — it is in the flag's name — so an explicit
+  `--format` is a usage error (there is no text/json/h1md analogue of a
+  consolidated code-scanning upload). A redundant `--format sarif` is accepted.
+- **`--fail-on`** gates on the merged, deduplicated findings (exit `3` when one
+  reaches the chosen severity), mirroring the scan / `--diff` convention — so a
+  consolidation step can also fail the build on a high/critical lead anywhere in
+  the scope. A finding present in two inputs is counted once.
+- **`-o`/`--output-file`** writes the SARIF document to a file (atomically), the
+  natural shape for "produce `omen.sarif`, then upload it".
+- Each input may be a single-contract JSON, a JSON array of reports, or a
+  `--batch` JSONL stream — whatever `-o` produced — so merging a per-directory
+  set of batch runs is just `omen --sarif-merge batch-*.jsonl -o omen.sarif`.
+- A missing, unreadable, or non-JSON report is a usage error (exit `2`),
+  surfaced before any work — a broken input fails loudly.
 
 ### Writing the report to a file
 

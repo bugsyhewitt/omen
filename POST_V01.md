@@ -1348,3 +1348,95 @@ land.
 > code-scanning tool in the same pipeline, and it was the cheapest remaining
 > R3.x gap to close cleanly — one optional formatter parameter, one CLI flag,
 > one config key, all riding rails R3.1 already laid.
+
+### R3.4. `--sarif-merge` multi-run SARIF consolidation
+
+**Rank: 1 (Rotation 27) — the spatial complement to `--diff`**
+
+> **STATUS: ✅ IMPLEMENTED (R27, 2026-05-29).** `omen --sarif-merge REPORT
+> [REPORT ...]` consolidates the findings of two or more previously-saved omen
+> JSON reports into a **single SARIF 2.1.0 document**. Where `--diff` (R3.2) is
+> the *temporal* delta of two reports ("what changed between these runs?"),
+> `--sarif-merge` is the *spatial* union of N reports ("give me one
+> code-scanning upload for this whole set of runs"). The driving workflow is the
+> same whole-program scope the `--batch` family serves, but split across runs
+> that each emitted their own report — a per-module CI matrix, a sharded
+> `--parallel` sweep saved per shard, or one `-o` report per contract. GitHub
+> Advanced Security accepts one SARIF document per upload; without a merge step a
+> team uploads N times (N separate "tools" in the UI) or hand-stitches the JSON.
+> `--sarif-merge` produces the one document.
+>
+> Like `--diff`/`--list-checks` it is a **pure offline action** — it reads saved
+> reports and writes SARIF, needing no contract, compiler, Slither, or network,
+> so it runs on a fresh checkout / in CI. It reuses the exact R3.1 fingerprint
+> primitive: each input is read with `--diff`'s permissive `load_baseline_findings`
+> loader (single-contract JSON, a JSON array, or a `--batch` JSONL stream), and
+> findings shared across inputs are **deduplicated by `finding_fingerprint`**
+> (category + detector + contract + location), so an overlapping contract scanned
+> by two shards is not double-counted. The merged finding list is ordered
+> worst-first then by fingerprint, so the consolidated SARIF is byte-stable
+> regardless of input order or how each report listed its findings, and the
+> highest-impact leads lead the document (matching omen's default `--sort
+> severity`).
+>
+> **Surface.** A new `merge.py` module (`load_merge_findings`, the dedup+order
+> primitive; `build_merged_sarif`, the consolidator; `merge_gate_triggered`, the
+> `--fail-on` gate) follows the `diff.py`/`catalog.py` offline-action pattern.
+> The SARIF projection was kept DRY by extracting three shared helpers in
+> `formats.py` — `_sarif_rule` (one reportingDescriptor per category),
+> `sarif_document` (the SARIF envelope: schema, version, the one omen tool
+> driver), and `_source_mapping_locations` (physicalLocation from omen source
+> mappings) — that both the live-report `to_sarif` and the merge consolidator
+> share, plus by-value severity→level/score lookups for findings loaded as dicts
+> (where severity is a string, not a `Severity` enum). The merged document is
+> identical in shape to a single-run `--format sarif` report, so it uploads
+> exactly like one. The CLI adds `--sarif-merge` (`nargs="+"`), handled right
+> after `--diff` — before the scan-target requirement — so it runs with no
+> `--contract`/`--batch`/`--input-type`. Output is **always SARIF** (it is in the
+> flag's name): an explicit `--format` other than `sarif` is a usage error (exit
+> 2), since there is no text/json/h1md analogue of a consolidated upload. It
+> honors `-o` (atomic write, the natural "produce `omen.sarif` then upload it"
+> shape) and `--fail-on`, which gates on the merged, deduplicated findings (exit
+> 3) — a consolidation step can also fail the build on a high/critical lead
+> anywhere in the scope, with the dedup ensuring a finding in two inputs is
+> counted once. A missing/unreadable/non-JSON report is an exit-2 usage error,
+> surfaced before any work, consistent with `--diff`/`--baseline`. Unlike
+> `--baseline`/`--sarif-baseline` it takes no config key (it is an action with
+> N positional report paths, not a default-able single path — same as `--diff`).
+> Pure stdlib; the loader imports only `json`. Tests in
+> `tests/test_sarif_merge.py` (30 cases): loader — unions two reports,
+> deduplicates an overlapping finding, first-input-wins on a cross-file
+> duplicate, worst-first-then-fingerprint order, order-independence, JSONL/array
+> inputs, single input, empty reports, missing/non-JSON raise; builder — valid
+> SARIF shell, unions results, deduplicates, one rule per category,
+> severity→level/score mapping, source-location region, bytecode finding has no
+> location, determinism; gate — trips on high, counts the deduplicated set; CLI —
+> parse multi-arg/default-None, needs-no-target, rejects explicit `--format`,
+> accepts redundant `--format sarif`, fail-on trips / does-not-trip-below,
+> missing-file usage error, output-file; subprocess end-to-end — merge two
+> overlapping reports with `--fail-on critical` exits 3, dedup yields 2 results
+> not 3, critical leads. README gains a "Merging reports into one SARIF upload"
+> section plus usage-block and flag-list mentions. No detector, analysis-path,
+> live-scan-format, or dependency change — only an offline action and a DRY
+> refactor of the SARIF projection the live formatter already owned.
+>
+> **Why (R27 reasoning):** the rotation goal was to assess `--watch` (continuous
+> re-scan) vs `--sarif-merge` (multi-run consolidation) and pick the more
+> feasible. `--sarif-merge` won decisively on architectural fit. omen's entire
+> surface is single-shot "text in, text out" — every flag filters/orders/caps/
+> gates/transforms *one* invocation and exits; `--diff`/`--list-checks`/the
+> offline actions are pure functions over saved reports. `--watch` would be a
+> long-running daemon: a filesystem-watch loop (inotify or polling), signal
+> handling, streaming/incremental output, and interrupt semantics — a stateful
+> process model alien to every existing primitive, hard to test deterministically
+> (timing, file events), and offering value (re-run on change) a developer's
+> existing watch tooling (`entr`, `watchexec`, an IDE task) already provides by
+> wrapping the one-shot omen. `--sarif-merge`, by contrast, is one more pure
+> offline action on the exact `findings.py`/`formats.py` seam R3.1–R3.3 built: it
+> reuses the fingerprint dedup, the SARIF formatter, and the `--diff` loader,
+> adds no dependency and no daemon, and closes a real code-scanning gap the
+> `--batch`+SARIF combination left open — a multi-run scan that must become one
+> GitHub upload. It is the cheapest, most architecturally-aligned R3.x gap
+> remaining, and it completes the SARIF code-scanning story (`--format sarif` →
+> `--sarif-baseline` suppression → `--sarif-merge` consolidation) the R6 SARIF
+> output opened.

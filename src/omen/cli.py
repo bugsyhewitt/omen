@@ -15,6 +15,9 @@
     omen --diff <old-report.json> <new-report.json>
          [--format {text,json}] [--fail-on {...}] [-o/--output-file PATH]
 
+    omen --sarif-merge <report.json> [<report.json> ...]
+         [--fail-on {...}] [-o/--output-file PATH]
+
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
@@ -217,6 +220,30 @@ def build_parser() -> argparse.ArgumentParser:
             "Honors --format (text default, or json) and --fail-on (which gates on "
             "the *added* findings — exit 3 when a newly-introduced finding reaches "
             "the chosen severity — the 'fail the PR on regressions' CI move). A "
+            "missing/unreadable/non-JSON report is a usage error."
+        ),
+    )
+    parser.add_argument(
+        "--sarif-merge",
+        nargs="+",
+        default=None,
+        metavar="REPORT",
+        help=(
+            "consolidate two or more previously-saved omen JSON reports into a "
+            "single SARIF 2.1.0 document (POST_V01 R3.4). The spatial complement "
+            "to --diff: where --diff reports the delta between two reports, "
+            "--sarif-merge unions the findings of N reports into one "
+            "code-scanning upload — the fix for a per-module CI matrix or a "
+            "sharded scan that emits one report per run but needs one SARIF for "
+            "GitHub Advanced Security (which takes one document per upload). Each "
+            "REPORT may be a single-contract JSON, a JSON array, or a --batch "
+            "JSONL stream. Findings shared across inputs are deduplicated by "
+            "fingerprint (category + detector + contract + location, the same "
+            "identity --baseline/--diff use), so an overlapping contract is not "
+            "double-counted; output is worst-first and deterministic regardless "
+            "of input order. A pure offline action needing no contract, compiler, "
+            "or network. Output is always SARIF (--format is rejected); honors -o "
+            "and --fail-on (which gates on the merged findings — exit 3). A "
             "missing/unreadable/non-JSON report is a usage error."
         ),
     )
@@ -551,6 +578,29 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         write_output(render_diff(diff, fmt), args.output_file)
         if diff_gate_triggered(diff, args.fail_on):
+            return 3
+        return 0
+
+    # --- --sarif-merge: offline multi-run SARIF consolidation (POST_V01 R3.4) --
+    # Like --diff/--list-checks, a pure offline action: it unions the findings of
+    # N already-saved omen reports into one SARIF document, needing no
+    # target/compiler/network. Output is always SARIF (it is in the flag's name),
+    # so an explicit --format is a usage error — there is no text/json/h1md
+    # analogue of a consolidated code-scanning upload. -o redirects the document;
+    # --fail-on gates on the merged, deduplicated findings (exit 3), mirroring the
+    # scan/--diff convention. A broken report path is an exit-2 usage error,
+    # surfaced before any work, consistent with --diff/--baseline.
+    if args.sarif_merge is not None:
+        from .merge import build_merged_sarif, merge_gate_triggered
+
+        if args.format is not None and args.format != "sarif":
+            parser.error("--sarif-merge always emits SARIF; --format is not allowed")
+        try:
+            document = build_merged_sarif(args.sarif_merge)
+        except ValueError as exc:
+            parser.error(str(exc))
+        write_output(document, args.output_file)
+        if merge_gate_triggered(args.sarif_merge, args.fail_on):
             return 3
         return 0
 
