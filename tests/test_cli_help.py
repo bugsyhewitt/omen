@@ -51,6 +51,8 @@ def test_help_lists_format_choices():
     assert "junit" in text
     # checkstyle format (POST_V01 R3.7): Checkstyle XML code-review annotations.
     assert "checkstyle" in text
+    # sonarqube format (POST_V01 R3.8): SonarQube Generic Issue Import JSON.
+    assert "sonarqube" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -194,6 +196,46 @@ def test_checkstyle_format_scan_runs_end_to_end():
     assert errors[0].get("severity") == "error"
     # original severity preserved verbatim
     assert errors[0].get("omen-severity") == "high"
+
+
+def test_sonarqube_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format sonarqube is exercisable
+    # in CI on a fresh checkout. The SonarQube generic issue schema requires
+    # primaryLocation.filePath on every issue, which a bytecode finding (no
+    # source mapping) cannot supply, so the bytecode suicidal finding is
+    # skipped and the document is the well-formed empty-issues form — the
+    # honest "this format cannot represent that finding" failure mode, and
+    # the behaviour the unit tests pin.
+    import json as _json
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "sonarqube",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # sonarqube output is a JSON document with an "issues" array.
+    assert out.lstrip().startswith("{")
+    data = _json.loads(out)
+    assert "issues" in data
+    assert isinstance(data["issues"], list)
+    # Bytecode findings are skipped (no filePath), so the document is empty.
+    assert data["issues"] == []
 
 
 def test_cli_help_runs_as_subprocess():

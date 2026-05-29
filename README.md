@@ -107,7 +107,7 @@ omen [--config PATH] \
      --check CATEGORY[,CATEGORY...]   # a category, 'all', or a comma-separated list \
      [--exclude-check CATEGORY[,CATEGORY...]]   # inverse selector; not 'all' \
      [--rpc-url URL] \
-     [--format {json,text,h1md,sarif,gha,junit}] \
+     [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
      [--severity-override CATEGORY=SEVERITY[,...]]   # org-specific risk tuning \
@@ -147,7 +147,7 @@ omen --list-checks [--format {text,json}]
 - `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
 - `--exclude-check` — remove one or more categories from the `--check` set (the inverse selector). Accepts a single category or a **comma-separated list** (not `all`). Pairs with the default `--check all` to express "every class except these" — e.g. `--exclude-check greedy,prodigal` to drop the two noisiest bytecode heuristics. Excluding a class `--check` did not select is a no-op; excluding *every* selected class is a usage error (exit `2`). Default: exclude nothing. Applies in single-contract and `--batch` mode alike. See [Excluding classes from a scan](#excluding-classes-from-a-scan).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
-- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), or `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)).
+- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)), or `sonarqube` (SonarQube's [Generic Issue Import Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/) JSON — one issue per finding with SonarQube-native `BLOCKER`/`CRITICAL`/`MAJOR`/`MINOR`/`INFO` severity and a `VULNERABILITY` type, ingested directly via `sonar.externalIssuesReportPaths` so omen findings appear as first-class external issues in the SonarQube/SonarCloud UI; see [SonarQube generic issue output](#sonarqube-generic-issue-output)).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
@@ -979,6 +979,78 @@ A clean scan (no findings) emits a valid `<checkstyle>` document with no
 Checkstyle consumer recognises. Like the other scan formats, `checkstyle`
 applies to single-`--contract` mode; a `--batch` run always emits its JSONL
 stream.
+
+### SonarQube generic issue output
+
+`--format checkstyle` reaches SonarQube via its *generic Checkstyle* importer
+— a one-format-fits-all fallback. `--format sonarqube` targets SonarQube's
+purpose-built [Generic Issue Import Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/)
+directly: a JSON document with one `issue` per finding, native SonarQube
+severity (`BLOCKER`/`CRITICAL`/`MAJOR`/`MINOR`/`INFO`), a `VULNERABILITY` type,
+and an `engineId` of `omen` so omen issues group under their own engine in the
+SonarQube/SonarCloud UI. This is the SonarQube-native path — point
+`sonar.externalIssuesReportPaths` at the file and findings appear as
+first-class SonarQube external issues, with no format-translation layer.
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format sonarqube > omen-sonarqube.json
+```
+
+```json
+{
+  "issues": [
+    {
+      "engineId": "omen",
+      "ruleId": "reentrancy:slither:reentrancy-eth",
+      "severity": "CRITICAL",
+      "type": "VULNERABILITY",
+      "primaryLocation": {
+        "message": "external call before state update",
+        "filePath": "MyContract.sol",
+        "textRange": {"startLine": 42, "endLine": 47}
+      }
+    },
+    {
+      "engineId": "omen",
+      "ruleId": "tx-origin:slither:tx-origin",
+      "severity": "MAJOR",
+      "type": "VULNERABILITY",
+      "primaryLocation": {
+        "message": "tx.origin used for authorization",
+        "filePath": "MyContract.sol",
+        "textRange": {"startLine": 12}
+      }
+    }
+  ]
+}
+```
+
+omen's five-level severity (`critical`/`high`/`medium`/`low`/`informational`)
+maps onto SonarQube's five **one-to-one** in the natural worst-first order:
+`critical` → `BLOCKER`, `high` → `CRITICAL`, `medium` → `MAJOR`, `low` →
+`MINOR`, `informational` → `INFO`. `BLOCKER` is the only SonarQube severity
+that natively fails a quality gate by default, mirroring how omen reserves
+`critical` for its highest-impact bucket. The `ruleId` is composed as
+`<category>:<detector>` so SonarQube's rule filter distinguishes the
+underlying Slither detector inside an omen category (e.g.
+`overflow:slither:divide-before-multiply` vs `overflow:slither:tautology`),
+and every finding is bucketed as `VULNERABILITY` — the right SonarQube
+external-issue type for a smart-contract security weakness.
+
+In a SonarQube/SonarCloud workflow, run omen first, then point the SonarScanner
+at the report:
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format sonarqube -o omen-sonarqube.json
+sonar-scanner -Dsonar.externalIssuesReportPaths=omen-sonarqube.json
+```
+
+A clean scan (no findings) emits the well-formed empty document `{"issues":
+[]}`. The SonarQube generic issue schema strictly requires a `filePath` on
+every issue, so a bytecode-mode finding (no source mapping) cannot be
+represented and is skipped — prefer `--format json` or `sarif` for full
+coverage of a bytecode scan. Like the other scan formats, `sonarqube` applies
+to single-`--contract` mode; a `--batch` run always emits its JSONL stream.
 
 ### SARIF-native suppression with a baseline
 
