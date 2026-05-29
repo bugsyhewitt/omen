@@ -1504,3 +1504,64 @@ land.
 > annotations" section (contrasting the free no-upload path with the paid SARIF
 > upload, with a `--fail-on` annotate-and-block example) plus usage-block and
 > flag-list mentions.
+
+### R3.6. `--format junit` JUnit XML test-results report
+
+**Rank: 1 (Rotation 29) — the platform-agnostic CI complement to sarif/gha**
+
+> **STATUS: ✅ IMPLEMENTED (R29, 2026-05-29).** `omen … --format junit` renders a
+> scan as a [JUnit XML](https://github.com/testmoapp/junitxml) test-results
+> document — one failing `<testcase>` per finding (with a `<failure>` carrying
+> the description) under a single `<testsuite name="omen">` — the lingua franca
+> format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins,
+> CircleCI, Azure DevOps, and TeamCity. omen findings land in the CI **tests** tab
+> and fail the build on essentially any CI system, with no upload step and no paid
+> feature.
+>
+> **Why (R29 reasoning).** The rotation goal named `--format teamcity` or
+> `--format junit` as the next CI-integration output format, to verify which (if
+> either) was already shipped before implementing. A grep confirmed **neither**
+> `teamcity` nor `junit` appears anywhere in the source, tests, README, or
+> POST_V01 — both are unshipped. Between the two, **JUnit XML wins decisively**:
+> it is the single most widely-ingested CI test-result format, consumed natively
+> by GitHub Actions reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps — *and
+> by TeamCity itself*, which imports JUnit XML directly. TeamCity's own
+> service-message format is a single-vendor surface that JUnit subsumes for this
+> use case, so shipping `junit` covers the `teamcity` audience too while serving
+> every other CI. This also extends the R3.x CI-integration arc logically:
+> `--format sarif` (GitHub Advanced Security, paid, upload) → `--format gha`
+> (GitHub Actions only, free, no upload) → `--format junit` (every CI, free, no
+> upload, surfaced as test results). The three together cover the GitHub paid
+> path, the GitHub free path, and the platform-agnostic path with no overlap.
+>
+> **Surface.** A pure formatter in `formats.py` (`to_junit`), riding the exact
+> `render(report, fmt)` seam `to_text`/`to_sarif`/`to_gha` use — it never
+> re-orders or re-filters, just projects the already-triaged `report.findings`.
+> JUnit has no severity dimension (a testcase passes or fails), and every omen
+> finding *is* a failure (omen only emits findings), so `failures` always equals
+> `tests`; the omen severity is preserved verbatim in the `<failure>` `type` and
+> the message body header (`severity: … | detector: … | contract: …`) so nothing
+> is lost in the projection, mirroring how `to_sarif`/`to_gha` keep the original
+> severity alongside the projected level. Each finding's `<testcase>` `name`
+> reuses the compact-text identity (`<index>. <category> [<confidence>] <where>`)
+> with `where` from the same evidence shape the text formatter uses (source
+> mapping → opcode offset → contract); `classname` is `omen.<category>` so viewers
+> that group by class bucket findings by vulnerability class. All names,
+> attributes, and bodies are XML-escaped via `xml.sax.saxutils.escape`/`quoteattr`
+> so a `<`/`&`/`"` in a path or description cannot break the document. A clean
+> scan emits a valid suite with one *passing* testcase (no `<failure>`) so the CI
+> tests tab shows a green `omen` entry rather than an absent suite, mirroring
+> `to_gha`'s single `::notice` on an empty report. The CLI adds `junit` to
+> `--format`'s choices; like `h1md`/`sarif`/`gha` it is a single-`--contract` scan
+> format (a `--batch` run always emits JSONL regardless of `--format`, so `junit`
+> needs no batch wiring). Pure stdlib (`xml.sax.saxutils`); no dependency, no
+> detector/analysis-path change. Tests in `tests/test_formats.py` (11 new cases):
+> well-formed XML with a `testsuite` root, one failing testcase per finding,
+> report-order preservation, `classname` bucketing by category, severity in the
+> `<failure>` type/message, location in the testcase name (source + bytecode),
+> empty report → green single-testcase suite, XML escaping of special chars, and
+> render dispatch; plus a `--format junit` end-to-end subprocess scan and the
+> `--help` choice list in `tests/test_cli_help.py`. README gains a "JUnit XML
+> output" section (contrasting the platform-agnostic path with the GitHub-specific
+> sarif/gha paths, with a `dorny/test-reporter` workflow example) plus usage-block
+> and flag-list mentions.

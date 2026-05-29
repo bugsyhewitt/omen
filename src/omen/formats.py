@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, and gha.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -13,12 +13,19 @@ rather than piping it into another tool. The gha format (POST_V01 R3.5) emits
 GitHub Actions workflow-command annotations (``::error``/``::warning``/
 ``::notice file=...,line=...::message``), which the Actions runner turns into
 inline PR-diff annotations on every repository for free — the no-upload, no-
-Advanced-Security complement to the SARIF code-scanning path.
+Advanced-Security complement to the SARIF code-scanning path. The junit format
+(POST_V01 R3.6) emits a JUnit XML report — the lingua franca test-result format
+that GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps,
+and TeamCity all ingest natively. Each finding becomes a failing ``<testcase>``
+(with a ``<failure>`` carrying the description), grouped under one
+``<testsuite>``; it is the platform-agnostic "surface omen findings in the CI
+test-results tab and fail the build" lever that works on essentially every CI.
 """
 
 from __future__ import annotations
 
 import json
+from xml.sax.saxutils import escape, quoteattr
 
 from . import __version__
 from .analyzer import AnalysisReport
@@ -518,6 +525,106 @@ def to_gha(report: AnalysisReport) -> str:
     return "\n".join(_gha_line(f) for f in report.findings)
 
 
+# JUnit has no severity dimension — a testcase either passed or it failed. omen
+# findings are all "the contract has a problem", so every finding is a failure.
+# The omen severity is preserved verbatim in the failure ``type`` attribute and
+# message so nothing is lost in the projection, mirroring how the SARIF/gha
+# formatters keep the original severity alongside the projected level.
+def _junit_location(f: Finding) -> str:
+    """A short ``where`` suffix for a finding's JUnit testcase name.
+
+    Reuses omen's evidence shape (source mapping first, then opcode offset, then
+    contract) so the testcase name pins the finding to a location the same way
+    the compact text formatter's finding line does. Returns an empty string for
+    a finding with no locatable evidence.
+    """
+    if f.evidence.source_mapping:
+        return f.evidence.source_mapping[0]
+    if f.evidence.opcodes:
+        return f"@0x{f.evidence.opcodes[0].get('offset', 0):x}"
+    if f.contract:
+        return f.contract
+    return ""
+
+
+def _junit_testcase(index: int, f: Finding) -> list[str]:
+    """The XML lines for one finding rendered as a failing JUnit ``<testcase>``.
+
+    The testcase ``name`` is ``<index>. <category> [<confidence>] <where>`` — the
+    same scannable identity the text formatter uses — and its ``classname`` is the
+    finding's category so CI test-result UIs that group by class bucket findings
+    by vulnerability class. The single ``<failure>`` carries the omen severity in
+    its ``type`` and a ``severity: ... | detector: ...`` message header followed
+    by the finding's description as the element body, so the full triage context
+    survives into the CI test-results tab.
+    """
+    where = _junit_location(f)
+    name = f"{index}. {f.category} [{f.confidence}]"
+    if where:
+        name = f"{name} {where}"
+    classname = f"omen.{f.category}"
+    failure_type = f.severity.value
+    header = f"severity: {f.severity.value} | detector: {f.detector}"
+    if f.contract:
+        header = f"{header} | contract: {f.contract}"
+    body = f.description or f.title
+    failure_message = body.splitlines()[0] if body else f.title
+    lines = [
+        f"  <testcase name={quoteattr(name)} classname={quoteattr(classname)}>",
+        f"    <failure type={quoteattr(failure_type)} "
+        f"message={quoteattr(failure_message)}>{escape(header)}\n{escape(body)}"
+        f"</failure>",
+        "  </testcase>",
+    ]
+    return lines
+
+
+def to_junit(report: AnalysisReport) -> str:
+    """Render the report as a JUnit XML test-results document.
+
+    POST_V01 R3.6. One ``<testsuite>`` named ``omen`` whose ``tests`` count is the
+    number of findings and whose ``failures`` count equals it (every finding is a
+    failure — omen only emits findings, never "passes"). Each finding is one
+    failing ``<testcase>`` in the report's existing worst-first order; the
+    formatter never re-orders or re-filters (a pure formatter over
+    ``report.findings`` like ``to_text``/``to_sarif``/``to_gha``).
+
+    Unlike ``--format sarif`` (a GitHub *Advanced Security* upload) and
+    ``--format gha`` (GitHub-Actions-only annotations), JUnit XML is the
+    platform-agnostic CI test-result format ingested natively by GitHub Actions
+    test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity — so
+    omen findings land in the CI "tests" tab and fail the build on essentially any
+    CI system, no upload step or paid feature required.
+
+    A clean report (no findings) emits a valid ``<testsuite>`` with
+    ``tests="0" failures="0"`` and a single passing ``<testcase>`` recording that
+    omen ran, so the CI test-results tab shows a green "omen" entry rather than an
+    empty/absent suite (mirroring how ``to_gha`` emits a single ``::notice`` on an
+    empty report). All names, attributes, and bodies are XML-escaped.
+    """
+    count = len(report.findings)
+    suite_name = quoteattr("omen")
+    lines: list[str] = ['<?xml version="1.0" encoding="UTF-8"?>']
+    if not report.findings:
+        lines.append(
+            f"<testsuite name={suite_name} tests=\"1\" failures=\"0\" "
+            f"errors=\"0\">"
+        )
+        clean_name = quoteattr(f"omen scan of {report.origin}")
+        lines.append(f"  <testcase name={clean_name} classname=\"omen\"/>")
+        lines.append("</testsuite>")
+        return "\n".join(lines)
+
+    lines.append(
+        f"<testsuite name={suite_name} tests=\"{count}\" "
+        f"failures=\"{count}\" errors=\"0\">"
+    )
+    for i, f in enumerate(report.findings, start=1):
+        lines.extend(_junit_testcase(i, f))
+    lines.append("</testsuite>")
+    return "\n".join(lines)
+
+
 def _severity_summary(findings: list[Finding]) -> str:
     """Build a worst-first per-severity count line, e.g. ``2 high, 1 medium``.
 
@@ -620,4 +727,6 @@ def render(
         return to_sarif(report, baseline=sarif_baseline)
     if fmt == "gha":
         return to_gha(report)
+    if fmt == "junit":
+        return to_junit(report)
     raise ValueError(f"unknown output format: {fmt}")

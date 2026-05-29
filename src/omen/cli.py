@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -317,14 +317,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         default=None,
-        choices=["json", "h1md", "sarif", "text", "gha"],
+        choices=["json", "h1md", "sarif", "text", "gha", "junit"],
         help=(
             "output format. For a scan: json (default), text (a compact "
             "human-readable terminal summary), h1md, sarif (a SARIF 2.1.0 "
-            "log for GitHub code scanning / VSCode / CI), or gha (GitHub "
+            "log for GitHub code scanning / VSCode / CI), gha (GitHub "
             "Actions workflow-command annotations — ::error/::warning/::notice "
             "lines the Actions runner turns into inline PR-diff annotations on "
-            "every repo for free, no Advanced-Security upload; POST_V01 R3.5). "
+            "every repo for free, no Advanced-Security upload; POST_V01 R3.5), "
+            "or junit (a JUnit XML test-results report — one failing testcase "
+            "per finding, ingested natively by GitHub Actions test reporters, "
+            "GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen "
+            "findings land in the CI tests tab on any CI; POST_V01 R3.6). "
             "For --list-checks: text (default) or json."
         ),
     )

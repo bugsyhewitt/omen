@@ -107,7 +107,7 @@ omen [--config PATH] \
      --check CATEGORY[,CATEGORY...]   # a category, 'all', or a comma-separated list \
      [--exclude-check CATEGORY[,CATEGORY...]]   # inverse selector; not 'all' \
      [--rpc-url URL] \
-     [--format {json,text,h1md,sarif,gha}] \
+     [--format {json,text,h1md,sarif,gha,junit}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
      [--severity-override CATEGORY=SEVERITY[,...]]   # org-specific risk tuning \
@@ -147,7 +147,7 @@ omen --list-checks [--format {text,json}]
 - `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
 - `--exclude-check` — remove one or more categories from the `--check` set (the inverse selector). Accepts a single category or a **comma-separated list** (not `all`). Pairs with the default `--check all` to express "every class except these" — e.g. `--exclude-check greedy,prodigal` to drop the two noisiest bytecode heuristics. Excluding a class `--check` did not select is a no-op; excluding *every* selected class is a usage error (exit `2`). Default: exclude nothing. Applies in single-contract and `--batch` mode alike. See [Excluding classes from a scan](#excluding-classes-from-a-scan).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
-- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), or `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)).
+- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), or `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
@@ -850,6 +850,62 @@ annotate the diff and block the PR:
 The annotations land inline on the PR, and the step exits `3` (failing the job)
 when a high/critical lead is present. Like the other scan formats, `gha` applies
 to single-`--contract` mode; a `--batch` run always emits its JSONL stream.
+
+### JUnit XML output
+
+`--format sarif` is GitHub-Advanced-Security-specific and `--format gha` is
+GitHub-Actions-specific. `--format junit` is the **platform-agnostic** CI lever:
+it emits a [JUnit XML](https://github.com/testmoapp/junitxml) test-results
+report, the lingua franca format ingested natively by GitHub Actions test
+reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity. Each finding
+becomes one **failing `<testcase>`** (with a `<failure>` carrying the
+description), grouped under a single `<testsuite>` named `omen`, so the findings
+show up in the CI **tests** tab and fail the build on essentially any CI system —
+no upload step and no paid feature.
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format junit > omen-junit.xml
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="omen" tests="2" failures="2" errors="0">
+  <testcase name="1. reentrancy [high] MyContract.sol#42-48" classname="omen.reentrancy">
+    <failure type="high" message="external call before state update">severity: high | detector: slither:reentrancy-eth | contract: MyContract
+external call before state update</failure>
+  </testcase>
+  <testcase name="2. tx-origin [medium] MyContract.sol#12" classname="omen.tx-origin">
+    <failure type="medium" message="tx.origin used for authorization">severity: medium | detector: slither:tx-origin | contract: MyContract
+tx.origin used for authorization</failure>
+  </testcase>
+</testsuite>
+```
+
+Every omen finding is a failure (omen emits findings, never "passes"), so
+`failures` always equals `tests`. The testcase `name` carries the finding's
+category, confidence, and location (source mapping in source mode, opcode offset
+in bytecode mode) so it is scannable in the CI UI; the `classname` is
+`omen.<category>` so test-result viewers that group by class bucket findings by
+vulnerability class. The omen severity is preserved verbatim in the `<failure>`
+`type` and the message body. A clean scan emits a valid suite with one **passing**
+testcase (no `<failure>`), so the tests tab shows a green `omen` entry rather than
+an absent suite.
+
+In a workflow, combine it with a JUnit reporter (and optionally
+[`--fail-on`](#failing-ci-on-findings)) to surface findings as test results:
+
+```yaml
+- run: omen --contract MyContract.sol --input-type sol --check all --format junit > omen-junit.xml
+- uses: dorny/test-reporter@v1
+  if: always()
+  with:
+    name: omen
+    path: omen-junit.xml
+    reporter: java-junit
+```
+
+Like the other scan formats, `junit` applies to single-`--contract` mode; a
+`--batch` run always emits its JSONL stream.
 
 ### SARIF-native suppression with a baseline
 
