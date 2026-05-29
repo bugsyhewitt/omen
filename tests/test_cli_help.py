@@ -49,6 +49,8 @@ def test_help_lists_format_choices():
     assert "gha" in text
     # junit format (POST_V01 R3.6): JUnit XML test-results report.
     assert "junit" in text
+    # checkstyle format (POST_V01 R3.7): Checkstyle XML code-review annotations.
+    assert "checkstyle" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -150,6 +152,48 @@ def test_junit_format_scan_runs_end_to_end():
     assert len(cases) == 1
     assert "suicidal" in cases[0].get("name")
     assert cases[0].find("failure") is not None
+
+
+def test_checkstyle_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format checkstyle is exercisable
+    # in CI on a fresh checkout.
+    from pathlib import Path
+    from xml.etree import ElementTree as ET
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "checkstyle",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # checkstyle output is a Checkstyle XML document, not JSON.
+    assert not out.lstrip().startswith("{")
+    assert out.lstrip().startswith("<?xml")
+    root = ET.fromstring(out)
+    assert root.tag == "checkstyle"
+    # the suicidal bytecode finding becomes one <error> grouped under one <file>
+    files = root.findall("file")
+    assert len(files) == 1
+    errors = files[0].findall("error")
+    assert len(errors) == 1
+    # high omen severity -> Checkstyle "error" level
+    assert errors[0].get("severity") == "error"
+    # original severity preserved verbatim
+    assert errors[0].get("omen-severity") == "high"
 
 
 def test_cli_help_runs_as_subprocess():
