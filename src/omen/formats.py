@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, and SARIF.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, and gha.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -9,7 +9,11 @@ same tooling ecosystem as Slither's own SARIF output. The text format
 (POST_V01 Rotation 2, R2.6) is the compact human-readable terminal view: a
 per-severity count summary followed by one line per finding, worst-first — the
 "what did omen find, at a glance" read for an analyst running omen interactively
-rather than piping it into another tool.
+rather than piping it into another tool. The gha format (POST_V01 R3.5) emits
+GitHub Actions workflow-command annotations (``::error``/``::warning``/
+``::notice file=...,line=...::message``), which the Actions runner turns into
+inline PR-diff annotations on every repository for free — the no-upload, no-
+Advanced-Security complement to the SARIF code-scanning path.
 """
 
 from __future__ import annotations
@@ -394,6 +398,126 @@ def to_sarif(
     return sarif_document(list(rules_by_id.values()), results, indent=indent)
 
 
+# GitHub Actions workflow commands have exactly three annotation levels.
+# Map omen's five-level severity taxonomy onto them, worst-first: critical/high
+# become ``error`` (the red, build-failing annotation), medium becomes
+# ``warning``, low/informational become ``notice``. This is the same intent as
+# the SARIF level mapping (_SEVERITY_TO_SARIF_LEVEL) but onto the Actions
+# command vocabulary; the original severity is preserved verbatim in each
+# annotation's title so nothing is lost in the projection.
+_SEVERITY_TO_GHA_LEVEL = {
+    Severity.CRITICAL: "error",
+    Severity.HIGH: "error",
+    Severity.MEDIUM: "warning",
+    Severity.LOW: "notice",
+    Severity.INFORMATIONAL: "notice",
+}
+
+
+def _gha_escape_data(text: str) -> str:
+    """Escape the message body of a GitHub Actions workflow command.
+
+    Per the Actions runner's command parser, the data segment (after the ``::``)
+    must escape ``%`` (the escape introducer), CR, and LF so a multi-line or
+    percent-bearing message stays on one command line. Properties additionally
+    escape ``:`` and ``,`` (see ``_gha_escape_prop``).
+    """
+    return (
+        text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    )
+
+
+def _gha_escape_prop(text: str) -> str:
+    """Escape a property *value* of a GitHub Actions workflow command.
+
+    A property value (e.g. ``file=...`` or ``title=...``) sits inside the
+    comma-separated, colon-delimited property list, so beyond the data escapes
+    it must also escape ``:`` and ``,`` so a path or title containing them does
+    not prematurely close the value.
+    """
+    return (
+        _gha_escape_data(text).replace(":", "%3A").replace(",", "%2C")
+    )
+
+
+def _gha_location(f: Finding) -> tuple[str | None, int | None, int | None]:
+    """Extract (file, startLine, endLine) for a finding's GHA annotation.
+
+    Reuses omen's ``Contract.sol#12-18`` source-mapping shape (the same split
+    the SARIF physicalLocation helper performs): the part before ``#`` is the
+    file, the ``start-end`` after it the line range. A bytecode finding (no
+    source mapping) yields ``(None, None, None)`` — its annotation is emitted
+    without a ``file``/``line`` anchor, which GitHub still surfaces in the
+    Actions log (it just isn't pinned to a diff line).
+    """
+    if not f.evidence.source_mapping:
+        return (None, None, None)
+    loc = f.evidence.source_mapping[0]
+    if "#" not in loc:
+        return (loc, None, None)
+    uri, _, span = loc.partition("#")
+    start_s, _, end_s = span.partition("-")
+    try:
+        start = int(start_s)
+    except ValueError:
+        return (uri, None, None)
+    try:
+        end = int(end_s) if end_s else None
+    except ValueError:
+        end = None
+    return (uri, start, end)
+
+
+def _gha_line(f: Finding) -> str:
+    """One GitHub Actions workflow-command annotation line for a finding.
+
+    Shape: ``::LEVEL file=PATH,line=N,endLine=M,title=TITLE::MESSAGE``. ``file``,
+    ``line`` and ``endLine`` are omitted when the finding has no source location
+    (bytecode mode). The title carries omen's severity, category and confidence
+    so the annotation is self-describing in the PR/Actions UI; the message is the
+    finding's description (or title as a fallback). All segments are escaped per
+    the Actions command grammar.
+    """
+    level = _SEVERITY_TO_GHA_LEVEL.get(f.severity, "warning")
+    uri, start, end = _gha_location(f)
+    props: list[str] = []
+    if uri:
+        props.append(f"file={_gha_escape_prop(uri)}")
+        if start is not None:
+            props.append(f"line={start}")
+            if end is not None:
+                props.append(f"endLine={end}")
+    title = f"omen {f.severity.value}: {f.category} [{f.confidence}]"
+    props.append(f"title={_gha_escape_prop(title)}")
+    message = _gha_escape_data(f.description or f.title)
+    return f"::{level} {','.join(props)}::{message}"
+
+
+def to_gha(report: AnalysisReport) -> str:
+    """Render the report as GitHub Actions workflow-command annotations.
+
+    One ``::error``/``::warning``/``::notice`` command per finding, in the
+    report's existing worst-first order. Unlike ``--format sarif`` — which
+    targets GitHub *Advanced Security* code scanning (a paid feature) and is
+    uploaded as a document — these workflow commands are read by the Actions
+    *runner* on **every** repository for free: each becomes an inline annotation
+    on the PR diff and the workflow run summary, with no upload step. This is the
+    pure-formatter complement to the SARIF path for the common "fail the PR and
+    annotate the offending lines, in plain GitHub Actions" workflow.
+
+    A pure formatter over ``report.findings`` (like ``to_text``/``to_sarif``): it
+    never re-orders or re-filters. An empty report emits a single ``::notice``
+    so the step still leaves a visible "omen ran, found nothing" trace in the
+    Actions log rather than silent empty output.
+    """
+    if not report.findings:
+        return (
+            f"::notice title=omen {_gha_escape_prop(report.origin)}::"
+            f"{_gha_escape_data('omen found no findings for the requested checks.')}"
+        )
+    return "\n".join(_gha_line(f) for f in report.findings)
+
+
 def _severity_summary(findings: list[Finding]) -> str:
     """Build a worst-first per-severity count line, e.g. ``2 high, 1 medium``.
 
@@ -494,4 +618,6 @@ def render(
         return to_h1md(report)
     if fmt == "sarif":
         return to_sarif(report, baseline=sarif_baseline)
+    if fmt == "gha":
+        return to_gha(report)
     raise ValueError(f"unknown output format: {fmt}")

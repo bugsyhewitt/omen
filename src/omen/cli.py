@@ -317,12 +317,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         default=None,
-        choices=["json", "h1md", "sarif", "text"],
+        choices=["json", "h1md", "sarif", "text", "gha"],
         help=(
             "output format. For a scan: json (default), text (a compact "
-            "human-readable terminal summary), h1md, or sarif (a SARIF 2.1.0 "
-            "log for GitHub code scanning / VSCode / CI). For --list-checks: "
-            "text (default) or json."
+            "human-readable terminal summary), h1md, sarif (a SARIF 2.1.0 "
+            "log for GitHub code scanning / VSCode / CI), or gha (GitHub "
+            "Actions workflow-command annotations — ::error/::warning/::notice "
+            "lines the Actions runner turns into inline PR-diff annotations on "
+            "every repo for free, no Advanced-Security upload; POST_V01 R3.5). "
+            "For --list-checks: text (default) or json."
         ),
     )
     parser.add_argument(

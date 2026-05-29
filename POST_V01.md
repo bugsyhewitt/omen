@@ -1440,3 +1440,67 @@ land.
 > remaining, and it completes the SARIF code-scanning story (`--format sarif` →
 > `--sarif-baseline` suppression → `--sarif-merge` consolidation) the R6 SARIF
 > output opened.
+
+### R3.5. `--format gha` GitHub Actions workflow-command annotations
+
+**Rank: 1 (Rotation 28) — the free, no-upload complement to the SARIF path**
+
+> **STATUS: ✅ IMPLEMENTED (R28, 2026-05-29).** `omen … --format gha` renders a
+> scan as GitHub Actions [workflow
+> commands](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions)
+> — one `::error`/`::warning`/`::notice file=PATH,line=N,endLine=M,title=…::message`
+> line per finding — which the Actions runner reads off the step's stdout and
+> turns into **inline annotations on the PR diff** and the run summary, on
+> **every** repository, with no upload step.
+>
+> **Why (R28 reasoning).** The rotation goal was to assess the `--schedule`
+> integration and a `--output-format` streaming mode, verifying first whether
+> either was already shipped or feasible. Both lose on architectural fit, the
+> same way R27 rejected `--watch`: `--schedule`/`--watch` require a **stateful
+> daemon** (a long-running loop, signal handling, interrupt semantics) alien to
+> omen's single-shot "text in, text out" model — and a developer's existing
+> scheduler (cron, an Actions `schedule:` trigger, `entr`/`watchexec`) already
+> wraps the one-shot omen, so omen owning the daemon adds risk without value.
+> "streaming output" is likewise not a real gap: `--batch` **already** streams
+> its JSONL line-by-line as each contract finishes (R2.13's note: "streaming to
+> stdout, line by line, remains"), and a single-contract scan is one report with
+> nothing to stream. With the R3.x SARIF roadmap shipped through R3.4/R27
+> (`--format sarif` → `--sarif-baseline` → `--sarif-merge`), the next-best
+> unshipped gap is the **other** half of the GitHub CI story: `--format sarif`
+> targets GitHub *Advanced Security* code scanning — a paid feature on private
+> repos, requiring an `upload-sarif` step — whereas GitHub Actions
+> *workflow-command annotations* surface inline on the PR diff on **every** repo
+> for **free**, with no upload. That is a real, distinct workflow `--format
+> sarif` does not cover, and it is the cheapest, most architecturally-aligned
+> remaining R3.x gap.
+>
+> **Surface.** A pure formatter in `formats.py` (`to_gha`), riding the exact
+> `render(report, fmt)` seam `to_text`/`to_sarif` use — it never re-orders or
+> re-filters, just projects the already-triaged `report.findings`. Severities
+> map to the three workflow-command levels (`_SEVERITY_TO_GHA_LEVEL`:
+> high/critical → `error`, medium → `warning`, low/informational → `notice`),
+> mirroring the SARIF level intent onto the Actions vocabulary. Source-mode
+> findings reuse the `Contract.sol#start-end` mapping split (the same shape the
+> SARIF `physicalLocation` helper consumes) to emit `file`/`line`/`endLine`;
+> bytecode findings (no source mapping) emit a command with no `file` anchor,
+> which still appears in the run log. Each annotation's `title` carries omen's
+> severity + category + confidence so it is self-describing in the UI; the
+> message is the finding's description. All segments are escaped per the Actions
+> command grammar (`_gha_escape_data`: `%`/CR/LF; `_gha_escape_prop`: also `:`
+> and `,`) so a path or message containing those characters cannot break the
+> command. A clean scan emits a single `::notice` so the step leaves a visible
+> "omen ran, found nothing" trace rather than empty output. The CLI adds `gha`
+> to `--format`'s choices; like `h1md`/`sarif` it is a single-`--contract` scan
+> format (a `--batch` run always emits JSONL regardless of `--format`, the
+> existing behaviour, so `gha` needs no batch wiring). Pure stdlib; no
+> dependency, no detector/analysis-path change. Tests in `tests/test_formats.py`
+> (12 new cases): one command per finding in report order, severity→level
+> mapping (error/warning/notice), source file+line-range, single-line mapping has
+> no `endLine`, title carries severity/category/confidence, message after the
+> `::` separator, bytecode finding has no `file` anchor, newline/percent escaping,
+> colon/comma escaping in the `file` property, empty report → single `::notice`,
+> render dispatch; plus a `--format gha` end-to-end subprocess scan and the
+> `--help` choice list in `tests/test_cli_help.py`. README gains a "GitHub Actions
+> annotations" section (contrasting the free no-upload path with the paid SARIF
+> upload, with a `--fail-on` annotate-and-block example) plus usage-block and
+> flag-list mentions.
