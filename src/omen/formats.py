@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -26,7 +26,16 @@ static-analysis-specific lingua franca consumed natively by GitLab CI's
 Reviewdog, SonarQube, the Jenkins Checkstyle plugin, and most code-review bots.
 Where ``junit`` projects findings as *test results*, ``checkstyle`` projects
 them as *code-review annotations* keyed on a file/line, which is the shape these
-review-side platforms expect for static-analysis output.
+review-side platforms expect for static-analysis output. The sonarqube format
+(POST_V01 R3.8) emits a SonarQube `Generic Issue Import Format
+<https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/>`_
+JSON document — SonarQube's *own* native external-issues schema, the
+SonarQube-native complement to the Checkstyle workaround. Where ``checkstyle``
+reaches SonarQube via its generic *Checkstyle* importer (a one-format-fits-all
+fallback), ``sonarqube`` targets SonarQube's purpose-built generic issue
+importer directly, with native SonarQube severity/type fields, so omen findings
+land as first-class external issues in the SonarQube/SonarCloud UI with no
+format translation step.
 """
 
 from __future__ import annotations
@@ -843,6 +852,165 @@ def to_text(report: AnalysisReport) -> str:
     return "\n".join(lines)
 
 
+# SonarQube `Generic Issue Import Format` (POST_V01 R3.8). SonarQube defines
+# exactly five severity levels (BLOCKER/CRITICAL/MAJOR/MINOR/INFO); omen's
+# five-level H1 taxonomy maps onto them one-to-one in the natural worst-first
+# order. critical -> BLOCKER (the SonarQube "must fix, will block release"
+# bucket — the only SonarQube level that natively fails a quality gate by
+# default); high -> CRITICAL; medium -> MAJOR (SonarQube's default for most
+# external rules); low -> MINOR; informational -> INFO. The original omen
+# severity is *not* lossless under this projection — SonarQube exposes only the
+# mapped level on its UI/API — so the projected level is what consumers see; the
+# mapping is documented and stable. Unlike SARIF/checkstyle/gha, the SonarQube
+# generic issue schema has no free-form "extra attributes" slot per issue, so a
+# verbatim-severity round-trip is not on the table here; the level mapping is
+# the contract.
+_SEVERITY_TO_SONARQUBE = {
+    Severity.CRITICAL: "BLOCKER",
+    Severity.HIGH: "CRITICAL",
+    Severity.MEDIUM: "MAJOR",
+    Severity.LOW: "MINOR",
+    Severity.INFORMATIONAL: "INFO",
+}
+
+# Every omen finding is a security weakness in a contract. SonarQube's three
+# external-issue ``type`` values are BUG / VULNERABILITY / CODE_SMELL; the right
+# bucket for a smart-contract vulnerability is VULNERABILITY across the board
+# (it is what SonarQube's own dashboards filter "security issues" on).
+_SONARQUBE_TYPE = "VULNERABILITY"
+
+# The engine identifier under which omen's external issues appear in SonarQube's
+# UI ("External rules" → engine list). Kept short and stable so a SonarQube
+# project's quality-gate rules can refer to it without coupling to a version.
+_SONARQUBE_ENGINE_ID = "omen"
+
+
+def _sonarqube_location(f: Finding) -> "dict | None":
+    """Build the SonarQube ``primaryLocation`` entry for a finding.
+
+    SonarQube's generic issue schema *requires* every issue to carry a
+    ``primaryLocation`` with at least a ``message`` and a ``filePath``. A
+    finding with a source mapping (``Contract.sol#start-end``) supplies the
+    file path and a ``textRange`` (a 1-based ``startLine``/``endLine`` pair,
+    matching the SARIF helper's parse); a bytecode-mode finding (no source
+    mapping) has no file to anchor to and is therefore not representable as a
+    SonarQube issue. We return ``None`` in that case and the caller skips the
+    finding rather than emit a malformed issue — the honest "this format
+    cannot represent that finding" failure mode, parallel to how GitHub
+    Actions annotations degrade to a `file`-less command for bytecode but the
+    SonarQube schema strictly requires the field.
+    """
+    if not f.evidence.source_mapping:
+        return None
+    loc = f.evidence.source_mapping[0]
+    file_path = loc
+    text_range: dict | None = None
+    if "#" in loc:
+        file_path, _, span = loc.partition("#")
+        start_s, _, end_s = span.partition("-")
+        try:
+            start = int(start_s)
+        except ValueError:
+            start = None
+        try:
+            end = int(end_s) if end_s else None
+        except ValueError:
+            end = None
+        if start is not None:
+            text_range = {"startLine": start}
+            if end is not None:
+                text_range["endLine"] = end
+    if not file_path:
+        return None
+    primary: dict = {
+        "message": f.description or f.title,
+        "filePath": file_path,
+    }
+    if text_range:
+        primary["textRange"] = text_range
+    return primary
+
+
+def _sonarqube_rule_id(f: Finding) -> str:
+    """Stable per-finding rule id (``<category>:<detector>``).
+
+    SonarQube groups external issues by ``ruleId`` for its "Rule" filter and
+    its rule-violation counts on the dashboard. We compose the rule id from
+    the omen *category* and the underlying *detector*, so two findings of the
+    same category produced by different Slither detectors (e.g. ``overflow``
+    via ``divide-before-multiply`` vs ``tautology``) still appear under
+    distinct rules in the SonarQube UI — the same projection JUnit's
+    ``classname`` uses but at the detector level rather than the category
+    level, which is the right grain for a SonarQube rule filter. A finding
+    with an empty detector falls back to just the category, so the id is
+    always non-empty.
+    """
+    detector = (f.detector or "").strip()
+    if detector:
+        return f"{f.category}:{detector}"
+    return f.category
+
+
+def to_sonarqube(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as a SonarQube Generic Issue Import Format document.
+
+    POST_V01 R3.8. One ``{"issues": [...]}`` JSON document, one ``issue`` per
+    finding in the report's existing worst-first order (the formatter never
+    re-orders or re-filters — a pure formatter over ``report.findings`` like
+    every other format).
+
+    The output schema matches SonarQube's `Generic Issue Import Format
+    <https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/>`_,
+    which SonarQube and SonarCloud ingest natively via
+    ``sonar.externalIssuesReportPaths``. Each issue carries:
+
+      - ``engineId``: ``"omen"`` (the engine label SonarQube groups external
+        issues under).
+      - ``ruleId``: ``<category>:<detector>`` so the SonarQube rule filter
+        distinguishes the underlying Slither detector inside an omen category.
+      - ``severity``: one of ``BLOCKER``/``CRITICAL``/``MAJOR``/``MINOR``/
+        ``INFO`` — omen's five-level taxonomy maps onto SonarQube's five
+        one-to-one (critical → BLOCKER, high → CRITICAL, medium → MAJOR,
+        low → MINOR, informational → INFO).
+      - ``type``: always ``VULNERABILITY`` (every omen finding is a
+        security weakness).
+      - ``primaryLocation``: ``message`` + ``filePath`` (+ optional
+        ``textRange``), the SonarQube-required anchor.
+
+    Unlike ``--format checkstyle`` (which reaches SonarQube via the *generic*
+    Checkstyle importer, a one-format-fits-all fallback), ``--format
+    sonarqube`` targets SonarQube's *purpose-built* external-issues importer
+    directly with native SonarQube severity/type/engineId fields, so omen
+    findings appear as first-class SonarQube external issues — the same shape
+    the Sonar ecosystem expects for native rule integrations.
+
+    Bytecode-mode findings carry no source mapping (no ``filePath``) and the
+    SonarQube schema strictly requires ``primaryLocation.filePath``, so they
+    are skipped — they cannot be projected without inventing a fake path. A
+    report containing only bytecode-mode findings therefore emits the
+    well-formed empty document ``{"issues": []}``, the same shape a clean scan
+    produces; the caller can prefer ``--format json``/``sarif`` for full
+    coverage of a bytecode scan.
+    """
+    issues: list[dict] = []
+    for f in report.findings:
+        primary = _sonarqube_location(f)
+        if primary is None:
+            # No filePath available (bytecode mode). Skip rather than emit a
+            # SonarQube-invalid issue.
+            continue
+        issues.append(
+            {
+                "engineId": _SONARQUBE_ENGINE_ID,
+                "ruleId": _sonarqube_rule_id(f),
+                "severity": _SEVERITY_TO_SONARQUBE.get(f.severity, "MAJOR"),
+                "type": _SONARQUBE_TYPE,
+                "primaryLocation": primary,
+            }
+        )
+    return json.dumps({"issues": issues}, indent=indent, sort_keys=False)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -870,4 +1038,6 @@ def render(
         return to_junit(report)
     if fmt == "checkstyle":
         return to_checkstyle(report)
+    if fmt == "sonarqube":
+        return to_sonarqube(report)
     raise ValueError(f"unknown output format: {fmt}")

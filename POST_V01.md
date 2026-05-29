@@ -1566,6 +1566,111 @@ land.
 > sarif/gha paths, with a `dorny/test-reporter` workflow example) plus usage-block
 > and flag-list mentions.
 
+### R3.8. `--format sonarqube` SonarQube Generic Issue Import JSON
+
+**Rank: 1 (Rotation 31) — the SonarQube-native complement to the Checkstyle fallback**
+
+> **STATUS: ✅ IMPLEMENTED (R31, 2026-05-29).** `omen … --format sonarqube`
+> renders a scan as a [SonarQube Generic Issue Import
+> Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/)
+> JSON document — one `{"issues": [...]}` object with one issue per finding —
+> the schema SonarQube and SonarCloud ingest natively via
+> `sonar.externalIssuesReportPaths`. Each issue carries SonarQube's native
+> `engineId: "omen"`, a `ruleId` of `<category>:<detector>` (so SonarQube's
+> rule filter distinguishes the underlying Slither detector inside an omen
+> category, e.g. `overflow:slither:divide-before-multiply` vs
+> `overflow:slither:tautology`), a `severity` mapped onto SonarQube's five
+> levels one-to-one (`critical` → `BLOCKER`, `high` → `CRITICAL`, `medium` →
+> `MAJOR`, `low` → `MINOR`, `informational` → `INFO` — the natural worst-first
+> projection, with `BLOCKER` being the only SonarQube severity that natively
+> fails a quality gate by default), a `type` of `VULNERABILITY` (every omen
+> finding is a smart-contract security weakness, the right SonarQube
+> external-issue bucket), and a `primaryLocation` with `message`, `filePath`,
+> and an optional `textRange` carrying the 1-based `startLine`/`endLine`. omen
+> findings appear as **first-class external issues in the SonarQube/SonarCloud
+> UI**, with no format-translation layer.
+>
+> **Why (R31 reasoning).** The rotation goal named `--format teamcity` (service
+> messages) vs `--format sonarqube` (generic issue import) as the next
+> CI-integration output format, to verify which (if either) was already shipped
+> before implementing. A grep confirmed **neither** appears in source, tests,
+> README, or POST_V01 — both are unshipped. Between the two, **SonarQube wins
+> decisively** on audience reach and architectural fit:
+> - **TeamCity** consumes JUnit XML directly via its service-message importer,
+>   so the TeamCity audience was already covered by R29's `--format junit`
+>   (POST_V01 R3.6 explicitly notes: "TeamCity ... imports JUnit XML
+>   directly. TeamCity's own service-message format is a single-vendor surface
+>   that JUnit subsumes for this use case"). A `teamcity` format would be a
+>   single-vendor service-message dialect duplicating coverage R29 already
+>   provides.
+> - **SonarQube**, by contrast, opens a *native* audience that is currently
+>   only reached via the **Checkstyle workaround** R30 calls out ("SonarQube —
+>   imports Checkstyle XML directly via the standard SonarQube generic issue
+>   importer"). The Checkstyle path is a one-format-fits-all fallback; the
+>   SonarQube `Generic Issue Import Format` is SonarQube's **own**
+>   purpose-built external-issues schema, with native severity/type/engineId
+>   fields the Checkstyle projection cannot supply (omen issues under
+>   Checkstyle land as generic "code-quality" issues, not as the security
+>   `VULNERABILITY` bucket SonarQube's dashboards filter on). Shipping the
+>   native format makes omen behave like every other SonarQube-aware scanner
+>   in the same pipeline — first-class, not via a fallback importer.
+>
+> The R3.x CI-integration arc now reads: `--format sarif` (GitHub Advanced
+> Security, paid, upload) → `--format gha` (GitHub Actions only, free, no
+> upload, annotations) → `--format junit` (every CI's tests tab, free, no
+> upload, also covers TeamCity) → `--format checkstyle` (GitLab Code Quality /
+> Reviewdog / Jenkins code-review side, free, no upload) → `--format
+> sonarqube` (SonarQube/SonarCloud native external-issues path, free, no
+> upload). The five together cover the GitHub paid path, the GitHub free path,
+> the platform-agnostic tests-tab path, the platform-agnostic
+> code-review-diff path, and the SonarQube-native security-dashboard path
+> with no audience overlap.
+>
+> **Surface.** A pure formatter in `formats.py` (`to_sonarqube`), riding the
+> exact `render(report, fmt)` seam every other formatter uses — it never
+> re-orders or re-filters, just projects the already-triaged `report.findings`.
+> Severities map via `_SEVERITY_TO_SONARQUBE`, the rule id via
+> `_sonarqube_rule_id` (`<category>:<detector>`, falling back to the bare
+> category when the detector is empty so the id is always non-empty), and the
+> location via `_sonarqube_location` which reuses omen's `Contract.sol#start-end`
+> mapping split (the same shape SARIF/gha/checkstyle consume). **Honest
+> projection note:** unlike SARIF/checkstyle/gha which have a "preserve the
+> original severity verbatim in an extra attribute" slot, the SonarQube
+> generic issue schema is strict — `engineId`/`ruleId`/`severity`/`type`/
+> `primaryLocation` and nothing else, no `properties` bag — so the projected
+> level is what consumers see (a finding-key test pins the issue schema to
+> exactly those five required keys). The natural-order severity mapping makes
+> this lossless in *practice* — every omen severity has its own SonarQube
+> level — but the omen severity string itself is not round-tripped.
+> **Bytecode-mode findings carry no `filePath` and the schema strictly
+> requires it**, so they are *skipped* rather than emitted as
+> SonarQube-invalid issues; a report containing only bytecode findings emits
+> the well-formed empty document `{"issues": []}`, the same shape a clean
+> scan produces. The honest "this format cannot represent that finding"
+> failure mode, parallel to how `to_gha` degrades to a `file`-less command
+> but the SonarQube schema strictly requires the field; the caller can prefer
+> `--format json`/`sarif` for full bytecode coverage. The CLI adds `sonarqube`
+> to `--format`'s choices; like `h1md`/`sarif`/`gha`/`junit`/`checkstyle` it
+> is a single-`--contract` scan format (a `--batch` run always emits JSONL
+> regardless of `--format`, the existing behaviour, so `sonarqube` needs no
+> batch wiring). Pure stdlib (`json`); no dependency, no detector/analysis-path
+> change. Tests in `tests/test_formats.py` (16 new cases): valid JSON with
+> `issues` array, one issue per finding in report order, full severity-mapping
+> table across omen's five levels (critical→BLOCKER, high→CRITICAL,
+> medium→MAJOR, low→MINOR, informational→INFO), type always VULNERABILITY,
+> engineId always omen, ruleId combines category+detector, ruleId falls back
+> to category when detector empty, primaryLocation carries
+> filePath+message+textRange, single-line mapping has no endLine, bytecode
+> finding is skipped, mixed source+bytecode skips only bytecode, empty report
+> → `{"issues": []}`, message falls back to title when description empty,
+> source mapping without `#` uses path only (no textRange), issue schema keys
+> are exactly the required set, and render dispatch; plus a `--format
+> sonarqube` end-to-end subprocess scan and the `--help` choice list in
+> `tests/test_cli_help.py`. README gains a "SonarQube generic issue output"
+> section (contrasting the SonarQube-native path with the Checkstyle
+> workaround, with a `sonar-scanner -Dsonar.externalIssuesReportPaths=...`
+> example) plus usage-block and flag-list mentions.
+
 ### R3.7. `--format checkstyle` Checkstyle XML code-review annotations
 
 **Rank: 1 (Rotation 30) — the code-review-side complement to junit/sarif/gha**

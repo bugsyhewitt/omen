@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -317,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         default=None,
-        choices=["json", "h1md", "sarif", "text", "gha", "junit", "checkstyle"],
+        choices=["json", "h1md", "sarif", "text", "gha", "junit", "checkstyle", "sonarqube"],
         help=(
             "output format. For a scan: json (default), text (a compact "
             "human-readable terminal summary), h1md, sarif (a SARIF 2.1.0 "
@@ -329,12 +329,17 @@ def build_parser() -> argparse.ArgumentParser:
             "per finding, ingested natively by GitHub Actions test reporters, "
             "GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen "
             "findings land in the CI tests tab on any CI; POST_V01 R3.6), "
-            "or checkstyle (a Checkstyle XML document — one <error> per finding "
+            "checkstyle (a Checkstyle XML document — one <error> per finding "
             "grouped under <file> elements, the static-analysis lingua franca "
             "ingested natively by GitLab CI's Code Quality widget, Reviewdog, "
             "SonarQube, and the Jenkins Checkstyle plugin so findings surface "
-            "as code-review annotations in the MR/PR diff; POST_V01 R3.7). "
-            "For --list-checks: text (default) or json."
+            "as code-review annotations in the MR/PR diff; POST_V01 R3.7), "
+            "or sonarqube (SonarQube's native Generic Issue Import Format JSON "
+            "— one issue per finding with BLOCKER/CRITICAL/MAJOR/MINOR/INFO "
+            "severity and VULNERABILITY type, ingested directly via "
+            "sonar.externalIssuesReportPaths so omen findings appear as "
+            "first-class external issues in the SonarQube/SonarCloud UI; "
+            "POST_V01 R3.8). For --list-checks: text (default) or json."
         ),
     )
     parser.add_argument(

@@ -15,6 +15,7 @@ from omen.formats import (
     to_json,
     to_junit,
     to_sarif,
+    to_sonarqube,
     to_text,
 )
 
@@ -66,6 +67,7 @@ def test_render_dispatch():
     assert render(_report(), "gha").startswith("::")
     assert render(_report(), "junit").lstrip().startswith("<?xml")
     assert render(_report(), "checkstyle").lstrip().startswith("<?xml")
+    assert render(_report(), "sonarqube").startswith("{")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -881,3 +883,273 @@ def test_checkstyle_collapses_newlines_in_message():
 
 def test_checkstyle_render_dispatch_matches_to_checkstyle():
     assert render(_source_report(), "checkstyle") == to_checkstyle(_source_report())
+
+
+# --- sonarqube format (POST_V01 R3.8) ------------------------------------
+
+
+def test_sonarqube_is_valid_json_with_issues_array():
+    data = json.loads(to_sonarqube(_source_report()))
+    assert isinstance(data, dict)
+    assert isinstance(data["issues"], list)
+    assert len(data["issues"]) == 2
+
+
+def test_sonarqube_one_issue_per_finding_in_report_order():
+    # _source_report() has access-control (high) then tx-origin (medium).
+    issues = json.loads(to_sonarqube(_source_report()))["issues"]
+    # rule ids are <category>:<detector>; verify order via ruleId.
+    assert issues[0]["ruleId"] == "access-control:slither:protected-vars"
+    assert issues[1]["ruleId"] == "tx-origin:slither:tx-origin"
+
+
+def test_sonarqube_severity_maps_h1_to_sonarqube_five_to_five():
+    # critical -> BLOCKER, high -> CRITICAL, medium -> MAJOR,
+    # low -> MINOR, informational -> INFO.
+    findings: list[Finding] = []
+    for sev in (
+        Severity.CRITICAL,
+        Severity.HIGH,
+        Severity.MEDIUM,
+        Severity.LOW,
+        Severity.INFORMATIONAL,
+    ):
+        findings.append(
+            Finding(
+                category="suicidal",
+                severity=sev,
+                title=f"t-{sev.value}",
+                description=f"d-{sev.value}",
+                detector=f"slither:{sev.value}",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=[f"Vuln.sol#{1}-{2}"]),
+            )
+        )
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["suicidal"],
+        findings=findings,
+    )
+    severities = [i["severity"] for i in json.loads(to_sonarqube(report))["issues"]]
+    assert severities == ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]
+
+
+def test_sonarqube_type_is_vulnerability_for_every_issue():
+    # Every omen finding is a smart-contract security weakness -> VULNERABILITY.
+    issues = json.loads(to_sonarqube(_source_report()))["issues"]
+    assert all(i["type"] == "VULNERABILITY" for i in issues)
+
+
+def test_sonarqube_engine_id_is_omen():
+    issues = json.loads(to_sonarqube(_source_report()))["issues"]
+    assert all(i["engineId"] == "omen" for i in issues)
+
+
+def test_sonarqube_rule_id_combines_category_and_detector():
+    # Two findings of the same category but different detectors should get
+    # distinct rule ids so SonarQube's rule filter distinguishes them.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["overflow"],
+        findings=[
+            Finding(
+                category="overflow",
+                severity=Severity.MEDIUM,
+                title="t",
+                description="d",
+                detector="slither:divide-before-multiply",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+            Finding(
+                category="overflow",
+                severity=Severity.MEDIUM,
+                title="t",
+                description="d",
+                detector="slither:tautology",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#5-6"]),
+            ),
+        ],
+    )
+    issues = json.loads(to_sonarqube(report))["issues"]
+    rule_ids = {i["ruleId"] for i in issues}
+    assert rule_ids == {
+        "overflow:slither:divide-before-multiply",
+        "overflow:slither:tautology",
+    }
+
+
+def test_sonarqube_rule_id_falls_back_to_category_when_detector_empty():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+        ],
+    )
+    issues = json.loads(to_sonarqube(report))["issues"]
+    assert issues[0]["ruleId"] == "suicidal"
+
+
+def test_sonarqube_primary_location_carries_file_path_and_text_range():
+    # access-control source mapping in _source_report() is Vuln.sol#12-18.
+    issues = json.loads(to_sonarqube(_source_report()))["issues"]
+    ac = next(i for i in issues if i["ruleId"].startswith("access-control:"))
+    primary = ac["primaryLocation"]
+    assert primary["filePath"] == "Vuln.sol"
+    assert primary["textRange"] == {"startLine": 12, "endLine": 18}
+    assert primary["message"] == "missing onlyOwner guard"
+
+
+def test_sonarqube_single_line_mapping_has_no_end_line():
+    # tx-origin source mapping is Vuln.sol#25 — a single-line location, so the
+    # textRange should carry only startLine (no endLine).
+    issues = json.loads(to_sonarqube(_source_report()))["issues"]
+    tx = next(i for i in issues if i["ruleId"].startswith("tx-origin:"))
+    text_range = tx["primaryLocation"]["textRange"]
+    assert text_range == {"startLine": 25}
+
+
+def test_sonarqube_bytecode_finding_is_skipped():
+    # SonarQube's generic issue schema strictly requires primaryLocation.filePath.
+    # _report() is a bytecode finding (opcodes, no source mapping), so it cannot
+    # be represented and must be skipped rather than emit a SonarQube-invalid issue.
+    data = json.loads(to_sonarqube(_report()))
+    assert data == {"issues": []}
+
+
+def test_sonarqube_mixed_source_and_bytecode_skips_only_bytecode():
+    # A report containing both source-mode and bytecode-mode findings should
+    # emit issues for the source ones and silently skip the bytecode ones.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="<project>",
+        checks=["all"],
+        findings=[
+            Finding(  # bytecode finding (no source mapping) -> skipped
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="omen:bytecode-selfdestruct",
+                contract="0xabc",
+                confidence="high",
+                evidence=Evidence(opcodes=[{"opcode": "SELFDESTRUCT", "offset": 16}]),
+            ),
+            Finding(  # source finding -> kept
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:reentrancy-eth",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#5-6"]),
+            ),
+        ],
+    )
+    issues = json.loads(to_sonarqube(report))["issues"]
+    assert len(issues) == 1
+    assert issues[0]["ruleId"] == "reentrancy:slither:reentrancy-eth"
+
+
+def test_sonarqube_empty_report_is_valid_empty_document():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    data = json.loads(to_sonarqube(report))
+    assert data == {"issues": []}
+
+
+def test_sonarqube_message_falls_back_to_title_when_description_empty():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="title-fallback",
+                description="",
+                detector="slither:suicidal",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+        ],
+    )
+    issues = json.loads(to_sonarqube(report))["issues"]
+    assert issues[0]["primaryLocation"]["message"] == "title-fallback"
+
+
+def test_sonarqube_source_mapping_without_hash_uses_path_only():
+    # A source mapping that is just a bare path with no #range -> filePath
+    # set, no textRange (the SonarQube schema allows it).
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:suicidal",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol"]),
+            ),
+        ],
+    )
+    issues = json.loads(to_sonarqube(report))["issues"]
+    primary = issues[0]["primaryLocation"]
+    assert primary["filePath"] == "V.sol"
+    assert "textRange" not in primary
+
+
+def test_sonarqube_issue_schema_keys_are_exactly_the_required_set():
+    # SonarQube ingests engineId/ruleId/severity/type/primaryLocation; no
+    # extra unknown fields should leak through (the schema is strict).
+    issues = json.loads(to_sonarqube(_source_report()))["issues"]
+    expected = {"engineId", "ruleId", "severity", "type", "primaryLocation"}
+    for issue in issues:
+        assert set(issue.keys()) == expected
+
+
+def test_sonarqube_render_dispatch_matches_to_sonarqube():
+    assert render(_source_report(), "sonarqube") == to_sonarqube(_source_report())
