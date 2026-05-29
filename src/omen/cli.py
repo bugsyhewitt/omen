@@ -12,6 +12,9 @@
          [--fail-on {never,informational,low,medium,high,critical}]
          [-o/--output-file PATH]
 
+    omen --diff <old-report.json> <new-report.json>
+         [--format {text,json}] [--fail-on {...}] [-o/--output-file PATH]
+
     omen --batch <dir-or-list-file> --input-type {sol,address}
          --check {...} [--rpc-url URL] [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
@@ -193,6 +196,28 @@ def build_parser() -> argparse.ArgumentParser:
             "[omen] table. CLI flags always override the file, so a committed "
             "omen.toml shrinks repeated invocations while staying overridable "
             "ad hoc. Pure stdlib (tomllib); no dependency."
+        ),
+    )
+    parser.add_argument(
+        "--diff",
+        nargs=2,
+        default=None,
+        metavar=("OLD", "NEW"),
+        help=(
+            "compare two previously-saved omen JSON reports and print the delta "
+            "— findings added (in NEW, not OLD), removed (in OLD, not NEW), and "
+            "the unchanged count (POST_V01 R3.2). The temporal complement to "
+            "--baseline: where --baseline suppresses known findings during a live "
+            "scan, --diff reports what changed between two already-saved reports, "
+            "a pure offline operation needing no contract, compiler, or network. "
+            "Each report may be a single-contract JSON, a JSON array of them, or a "
+            "--batch JSONL stream. A finding's identity is its fingerprint "
+            "(category + detector + contract + location), so a --severity-override "
+            "re-stamp or a Slither wording change does not show up as churn. "
+            "Honors --format (text default, or json) and --fail-on (which gates on "
+            "the *added* findings — exit 3 when a newly-introduced finding reaches "
+            "the chosen severity — the 'fail the PR on regressions' CI move). A "
+            "missing/unreadable/non-JSON report is a usage error."
         ),
     )
     parser.add_argument(
@@ -482,6 +507,30 @@ def main(argv: list[str] | None = None) -> int:
         if fmt not in ("text", "json"):
             parser.error("--list-checks supports --format text or json")
         print(render_catalog(fmt))
+        return 0
+
+    # --- --diff: offline report-to-report delta (POST_V01 R3.2) ---------------
+    # Like --list-checks, this runs with no target/compiler/network: it compares
+    # two already-saved omen JSON reports. text is the human-facing default; json
+    # is available for automation. The scan-oriented h1md/sarif formats do not
+    # apply to a report delta. --fail-on gates on the *added* findings so a PR
+    # gate can fail only on newly-introduced findings (exit 3), mirroring the scan
+    # --fail-on convention; a broken report path is an exit-2 usage error.
+    if args.diff is not None:
+        from .diff import build_diff, diff_gate_triggered
+        from .diff import render as render_diff
+
+        fmt = args.format or "text"
+        if fmt not in ("text", "json"):
+            parser.error("--diff supports --format text or json")
+        old_path, new_path = args.diff
+        try:
+            diff = build_diff(old_path, new_path)
+        except ValueError as exc:
+            parser.error(str(exc))
+        write_output(render_diff(diff, fmt), args.output_file)
+        if diff_gate_triggered(diff, args.fail_on):
+            return 3
         return 0
 
     # Beyond here we are running a scan: a target and input type are required.

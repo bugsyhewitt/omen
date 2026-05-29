@@ -1215,3 +1215,69 @@ land.
 > (still violates the Anti-Abstraction / Simplicity gates; the R2.14 batch
 > `--timeout` already bounds the per-item *wait*, which is the bounty-workflow
 > value).
+
+### R3.2. `--diff` report-to-report delta
+
+**Rank: 2 (Rotation 3) — the temporal complement to `--baseline`**
+
+> **STATUS: ✅ IMPLEMENTED (R25, 2026-05-29).** `--diff OLD NEW` compares two
+> previously-saved omen JSON reports and prints the delta: findings **added** (in
+> NEW, not OLD), **removed** (in OLD, not NEW), and the **unchanged** count. Where
+> `--baseline` (R3.1) *suppresses* known findings during a live scan, `--diff`
+> *reports* what changed between two already-saved reports — a pure offline
+> operation needing no contract, compiler, Slither, or network, so it runs on a
+> fresh checkout / in CI exactly like `--list-checks`. Each report may be a
+> single-contract JSON, a JSON array of them, or a `--batch` JSONL stream
+> (whatever `-o` produced). A finding's identity for matching is the **same stable
+> fingerprint `--baseline` uses** — `finding_fingerprint()`, category + detector +
+> contract + location — so a `--severity-override` re-stamp or a Slither wording
+> change does not show up as churn; the delta is deterministic (ordered by
+> fingerprint) regardless of how either report listed its findings. Built the same
+> zero-dependency, pure-primitive way as the rest of the triage surface:
+> `load_baseline_findings()` (a sibling of `load_baseline_fingerprints` that keeps
+> the full finding dict keyed by fingerprint, so the diff can show *which*
+> findings changed, not just how many; same permissive shapes and same
+> `ValueError`-on-broken-input loudness) and `diff_findings()` (the pure set delta
+> returning sorted `added`/`removed`/`unchanged` lists) in `findings.py`, plus a
+> self-contained `diff.py` module (`build_diff`, `diff_gate_triggered`, and
+> `to_text`/`to_json`/`render`) following the `catalog.py` offline-action pattern.
+> Wired into the CLI as `--diff OLD NEW` (nargs=2), handled right after
+> `--list-checks` — before the scan-target requirement — so it runs with no
+> `--contract`/`--batch`/`--input-type`. Honors `--format` (text default, json for
+> automation; h1md/sarif rejected as inapplicable to a report delta), `-o`
+> (atomic write, same as a scan report), and crucially `--fail-on`, which gates on
+> the **added** findings only (exit `3` when a newly-introduced finding reaches
+> the chosen severity) — the "fail the PR on a regression" CI move, with no need
+> to re-run the scanner. A removed or unchanged finding never re-trips a gate the
+> previous run already accounted for. A missing/unreadable/non-JSON report is an
+> exit-`2` usage error, surfaced before any work, consistent with `--baseline`.
+> Tests in `tests/test_diff.py` (31 cases: loader — keys by fingerprint keeping
+> the full dict, JSONL/array/single shapes, empty findings/file, non-dict skip,
+> first-wins-on-duplicate, missing/non-JSON raise; `diff_findings` —
+> added/removed/unchanged, identical-no-changes, deterministic order, ignores
+> severity/wording; build_diff summary counts; gate — trips on added high, ignores
+> removed/unchanged; renderers — text lists +/- blocks, no-changes message, opcode
+> location, json roundtrip, render dispatch + bad-format raise; CLI — parses two
+> args, default None, needs-no-target, json format, fail-on trips on added /
+> not on removed, missing-file & bad-format usage errors, output-file; subprocess
+> end-to-end — diff with `--fail-on high` exits 3 on a new high finding). README
+> gains a "Diffing two reports" section plus usage-block and flag-list mentions.
+> Pure offline-action change — no detector, analysis-path, scan-format, or
+> dependency change; the loader imports only stdlib `json`.
+>
+> **Why (R25 reasoning):** R24's `--baseline` solved the *scan-time* temporal
+> question (fail only on findings new since a captured baseline). The remaining
+> R3.2 gap was the *after-the-fact* one: given two reports already on disk, what
+> changed? `--baseline` cannot answer it (it re-runs the scanner against a live
+> target and a fingerprint set; it never sees the old report's *details*, only its
+> identities, and it never reports what was *removed*). The two R3.2 candidates
+> were `--diff` (compare two report files) and `--sarif-baseline` (SARIF-native
+> `baselineState` suppression). `--diff` won on architectural fit and value
+> density: it reuses the exact R3.1 fingerprint primitive, adds no dependency, is
+> a pure offline action on the same `findings.py` seam, and serves the high-value
+> "what did this PR change to the scan?" review/changelog workflow plus a
+> zero-rescan regression gate. `--sarif-baseline` would have required modeling
+> SARIF result-matching/`baselineState` semantics and reading SARIF *input* — a
+> heavier, format-coupled surface for a workflow `--baseline` + the existing SARIF
+> *output* already mostly cover. It remains the natural R3.3 candidate if a team
+> needs GitHub-code-scanning-native suppression specifically.

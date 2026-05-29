@@ -384,6 +384,104 @@ def suppress_baseline(
     return [f for f in findings if finding_fingerprint(f) not in baseline]
 
 
+def load_baseline_findings(path: "str") -> "dict[str, dict[str, Any]]":
+    """Load an omen JSON report from *path* keyed by finding fingerprint.
+
+    Like :func:`load_baseline_fingerprints`, but keeps the full finding *dict*
+    for each fingerprint instead of discarding everything but the identity. This
+    is what ``--diff`` (POST_V01 R3.2) needs: to show *which* findings were added
+    or removed between two saved reports, not merely how many.
+
+    Accepts the same permissive shapes as ``load_baseline_fingerprints`` — a
+    single-contract report object (``{"findings": [...]}``), a JSON array of such
+    objects, or a JSONL ``--batch`` stream (one report object per line). A finding
+    entry that is not a dict is skipped. If two findings share a fingerprint (e.g.
+    the same issue reported across two contracts in a batch with the same name and
+    location) the first wins — the fingerprint is the identity, so a duplicate is,
+    by construction, the "same" finding.
+
+    Raises ``ValueError`` (which the CLI turns into a usage error, exit 2) if the
+    file cannot be read or does not parse as JSON/JSONL, consistent with the
+    baseline loader — a malformed diff input is a user mistake worth surfacing.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"--diff: cannot read {path!r}: {exc}") from exc
+
+    def _collect(obj: "Any", into: "dict[str, dict[str, Any]]") -> None:
+        if isinstance(obj, dict):
+            findings = obj.get("findings")
+            if isinstance(findings, list):
+                for f in findings:
+                    if isinstance(f, dict):
+                        fp = finding_fingerprint(f)
+                        into.setdefault(fp, f)
+        elif isinstance(obj, list):
+            for item in obj:
+                _collect(item, into)
+
+    out: dict[str, dict[str, Any]] = {}
+    stripped = text.strip()
+    if not stripped:
+        return out
+
+    try:
+        doc = json.loads(stripped)
+    except json.JSONDecodeError:
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"--diff: {path!r} is not valid JSON or JSONL: {exc}"
+                ) from exc
+            _collect(doc, out)
+        return out
+
+    _collect(doc, out)
+    return out
+
+
+def diff_findings(
+    old: "dict[str, dict[str, Any]]",
+    new: "dict[str, dict[str, Any]]",
+) -> "dict[str, list[dict[str, Any]]]":
+    """Compare two fingerprint-keyed finding maps (POST_V01 R3.2 ``--diff``).
+
+    Given the findings of an *old* report and a *new* one (each keyed by
+    :func:`finding_fingerprint`, as produced by :func:`load_baseline_findings`),
+    returns a dict with three lists of full finding dicts:
+
+      - ``added``: findings present in *new* but not in *old* — the regressions /
+        newly-introduced leads a PR brought in. These are what a CI gate cares
+        about.
+      - ``removed``: findings present in *old* but not in *new* — issues that were
+        fixed (or that disappeared because code was deleted / a detector stopped
+        firing) since the old report.
+      - ``unchanged``: findings present in both — carried over, neither new nor
+        fixed.
+
+    Each list is ordered by fingerprint so the diff is deterministic regardless of
+    the order findings appeared in either input file. This is the temporal
+    complement to ``--baseline``: where ``--baseline`` *suppresses* known findings
+    during a live scan, ``--diff`` *reports* the delta between two already-saved
+    reports — a pure offline operation needing no compiler or network, useful for
+    'what did this PR change?' review and changelog/triage automation.
+    """
+    added = [new[fp] for fp in sorted(new) if fp not in old]
+    removed = [old[fp] for fp in sorted(old) if fp not in new]
+    unchanged = [new[fp] for fp in sorted(new) if fp in old]
+    return {"added": added, "removed": removed, "unchanged": unchanged}
+
+
 # Confidence ordering, low -> high. Used by the --min-confidence filter
 # (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
 # omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty
