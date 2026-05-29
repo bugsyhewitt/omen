@@ -128,6 +128,11 @@ omen --batch <dir-or-list-file> \
      [--severity-override CATEGORY=SEVERITY[,...]] \
      [--sort ...] [--limit N] [--fail-on ...] [-o/--output-file PATH]
 
+omen --diff <old-report.json> <new-report.json> \
+     [--format {text,json}]            # text (default) or machine-readable json \
+     [--fail-on {never,…,critical}]    # gate on the *added* findings (exit 3) \
+     [-o/--output-file PATH]
+
 omen --list-checks [--format {text,json}]
 ```
 
@@ -150,6 +155,7 @@ omen --list-checks [--format {text,json}]
 - `--parallel` — in `--batch` mode, analyze up to `N` contracts concurrently (a positive integer). Default: `1` (sequential — the historical behaviour). Use a higher `N` to speed up a whole-program scan of dozens-to-hundreds of contracts; the wall-clock win comes from the `solc`/`vyper` compiler subprocess each scan shells out to. Output, the `--fail-on` gate, the error count, and the `--batch-summary` roll-up stay in deterministic **input order**, so a parallel run's JSONL and exit code are byte-for-byte identical to the sequential run's — only faster. No effect in single `--contract` mode. See [Parallelizing a batch scan](#parallelizing-a-batch-scan).
 - `--timeout` — in `--batch` mode, give each contract at most `SECONDS` of wall-clock analysis time (a positive number; fractional values like `2.5` are allowed). Default: no budget (each scan runs to completion, the historical behaviour). A contract whose scan overruns is **abandoned and recorded as a per-item error** — it counts toward the exit-`1` error tally and the `--batch-summary` error count, with a message to stderr — so one pathological contract (a hanging compiler, a runaway symbolic path) can't stall a whole-program scan of dozens-to-hundreds of contracts. Enforced on the same thread-pool seam as `--parallel`, so output, the `--fail-on` gate, the error count, and the summary all stay in deterministic **input order**. To actually make progress *past* a stuck contract, pair it with `--parallel >= 2` (a free worker); with the default single worker the budget still bounds each item but a stuck scan blocks the items queued behind it. No effect in single `--contract` mode. See [Bounding per-contract scan time](#bounding-per-contract-scan-time).
 - `--batch-summary` — in `--batch` mode, print an aggregate roll-up to **stderr** after the JSONL stream: how many contracts were scanned / had findings / errored, the total findings broken down by severity (worst-first), and the worst-affected contracts. It answers "what did the whole-program scan find, overall?" without piping the JSONL through `jq`. The roll-up goes to stderr so the stdout JSONL stays machine-clean. No effect in single `--contract` mode. Default: off. See [Summarizing a batch scan](#summarizing-a-batch-scan).
+- `--diff` — compare two previously-saved omen JSON reports and print the delta: findings **added** (in `NEW`, not `OLD`), **removed** (in `OLD`, not `NEW`), and the **unchanged** count. The temporal complement to `--baseline`: where `--baseline` *suppresses* known findings during a live scan, `--diff` *reports* what changed between two already-saved reports — a pure offline operation needing no contract, compiler, or network (like `--list-checks`). Each report may be a single-contract JSON, a JSON array of them, or a `--batch` JSONL stream. A finding's identity is its category + detector + contract + location, so a `--severity-override` re-stamp or a Slither wording change does not show up as churn. Honors `--format text` (default) or `--format json`, and `--fail-on` — which gates on the *added* findings (exit `3` when a newly-introduced finding reaches the chosen severity), the "fail the PR on regressions" CI move. A missing/unreadable/non-JSON report is a usage error (exit `2`). See [Diffing two reports](#diffing-two-reports).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
 
 ### Scoping a scan to specific classes
@@ -891,6 +897,71 @@ of the tooling:
 
 To refresh the baseline after intentionally accepting (or fixing) findings,
 re-run step 1 and commit the new file.
+
+### Diffing two reports
+
+`--baseline` answers "fail only on findings *new* since this point" at scan time.
+`--diff` answers the related question *after the fact*: given two saved omen
+reports, **what changed between them?** It is a pure offline comparison — no
+contract, compiler, Slither, or network — so it runs on a fresh checkout in CI
+exactly like `--list-checks`:
+
+```bash
+# Scan the same scope before and after a change set.
+omen --contract Token.sol --input-type sol --check all -o before.json
+# … apply a PR / fix / refactor …
+omen --contract Token.sol --input-type sol --check all -o after.json
+
+# What did the change introduce or fix?
+omen --diff before.json after.json
+```
+
+```text
+omen 0.1.0 — report diff
+old: before.json
+new: after.json
+changes: +1 added  -1 removed  =3 unchanged
+
+Added (1):
+  + HIGH          access-control [medium]  Token.sol#42-48
+
+Removed (1):
+  - HIGH          reentrancy [high]  Token.sol#90-104
+```
+
+The delta has three parts:
+
+- **added** — findings in the new report but not the old one: the regressions /
+  new leads the change introduced. These are what a CI gate cares about.
+- **removed** — findings in the old report but not the new one: issues fixed (or
+  code deleted) since the old report.
+- **unchanged** — findings present in both: carried over (counted, not listed —
+  the point of a diff is the delta).
+
+A finding's identity for matching is the **same fingerprint `--baseline` uses** —
+category + detector + contract + location — so a `--severity-override` re-stamp or
+a Slither wording change does not show up as churn. The diff is deterministic
+(ordered by fingerprint) regardless of how either report listed its findings.
+
+`--diff` composes with the rest of the surface:
+
+- **`--format json`** emits a machine-readable delta — a `summary` count object
+  plus the full `added`/`removed`/`unchanged` finding lists — for changelog or
+  triage automation. `--format text` (the default) is the glanceable summary
+  above. The scan-oriented `h1md`/`sarif` formats do not apply to a report delta.
+- **`--fail-on`** turns `--diff` into a regression gate: it exits `3` when an
+  *added* finding reaches the chosen severity, and `0` otherwise. Only added
+  findings are eligible — a removed or unchanged finding never re-trips a gate the
+  previous run already accounted for. So `omen --diff before.json after.json
+  --fail-on high` is the "fail the PR if it introduces a high/critical finding"
+  move, with no need to re-run the scanner.
+- **`-o`/`--output-file`** writes the rendered diff to a file (atomically), same
+  as a scan report.
+- Either report may be a single-contract JSON, a JSON array of reports, or a
+  `--batch` JSONL stream — whatever `-o` produced — so a whole-program batch diff
+  is `omen --diff batch-before.jsonl batch-after.jsonl`.
+- A missing, unreadable, or non-JSON report is a usage error (exit `2`),
+  surfaced before any work — a broken diff input fails loudly.
 
 ### Writing the report to a file
 
