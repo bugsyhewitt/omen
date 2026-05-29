@@ -313,6 +313,7 @@ def _analyze_one(
     fail_on: str | None,
     exclude_check: str | None,
     severity_override: str | None,
+    baseline: str | None,
 ) -> tuple[AnalysisReport | None, str | None]:
     """Analyze a single batch *item*; return ``(report, error_message)``.
 
@@ -338,6 +339,7 @@ def _analyze_one(
             fail_on=fail_on,
             exclude_check=exclude_check,
             severity_override=severity_override,
+            baseline=baseline,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         return None, f"omen: batch error [{item}]: {exc}"
@@ -363,6 +365,7 @@ def run_batch(
     severity_override: str | None = None,
     parallel: int | str | None = None,
     timeout: float | int | str | None = None,
+    baseline: str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -458,6 +461,15 @@ def run_batch(
     timeout error) are folded into the run's state in input order. **No effect in
     single --contract mode** (one target, nothing a per-item batch budget bounds).
 
+    *baseline* (POST_V01) is the path to a previously-saved omen report used as a
+    known-good baseline, forwarded to ``analyze`` for each item. Each contract's
+    findings whose fingerprint already appears in the baseline are suppressed
+    before that item's filter/sort/cap/gate, so a whole-program batch fails (and
+    reports) only on findings *new* relative to the baseline. The same baseline
+    file applies uniformly to every item, so a batch baseline is naturally the
+    JSONL output of a previous batch run (the loader reads either a single report
+    object or a JSONL stream of them). ``None`` (the default) suppresses nothing.
+
     Returns 1 if any item raised an exception or timed out; otherwise 3 if the
     --fail-on gate tripped on any item; otherwise 0.
     """
@@ -513,6 +525,7 @@ def run_batch(
             fail_on=fail_on,
             exclude_check=exclude_check,
             severity_override=severity_override,
+            baseline=baseline,
         )
 
     # A per-item --timeout (R2.14) can only be enforced by waiting on a future

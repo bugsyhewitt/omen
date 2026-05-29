@@ -113,6 +113,7 @@ omen [--config PATH] \
      [--severity-override CATEGORY=SEVERITY[,...]]   # org-specific risk tuning \
      [--sort {severity,none}] \
      [--limit N] \
+     [--baseline PATH]                # suppress findings already in a known-good baseline \
      [--fail-on {never,informational,low,medium,high,critical}] \
      [-o/--output-file PATH]
 
@@ -122,6 +123,7 @@ omen --batch <dir-or-list-file> \
      [--parallel N]                    # analyze N contracts concurrently \
      [--timeout SECONDS]               # per-contract wall-clock budget; abandon overruns \
      [--batch-summary]                 # aggregate roll-up to stderr after the JSONL \
+     [--baseline PATH]                 # suppress findings already in a known-good baseline \
      [--check ...] [--rpc-url URL] [--min-confidence ...] [--min-severity ...] \
      [--severity-override CATEGORY=SEVERITY[,...]] \
      [--sort ...] [--limit N] [--fail-on ...] [-o/--output-file PATH]
@@ -141,6 +143,7 @@ omen --list-checks [--format {text,json}]
 - `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
+- `--baseline` — suppress findings already present in `PATH`, a previously-saved omen JSON report (a single-contract report, or one line / the whole JSONL stream of a `--batch` run) used as a **known-good baseline**. Only findings *new* relative to the baseline appear in the report, count toward the totals, and trip the `--fail-on` gate. This is the "adopt omen on a legacy codebase" CI move: capture today's findings with `omen … -o baseline.json`, commit it, then run with `--baseline baseline.json --fail-on high` so the pipeline fails only on issues introduced *after* the baseline. A finding's identity for matching is its category + detector + contract + location, so a `--severity-override` re-stamp or a Slither wording change does not make a known finding look new. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`; a missing/unreadable/non-JSON baseline is a usage error (exit `2`). Default: suppress nothing. See [Suppressing known findings with a baseline](#suppressing-known-findings-with-a-baseline).
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
 - `-o` / `--output-file` — write the report to `PATH` instead of stdout. Default: stdout (the historical behaviour). Composes with every `--format`: in single-contract mode the file gets the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch` mode it gets the JSONL stream (one JSON object per contract). The write is **atomic** — content goes to a sibling `.tmp` and is renamed into place — so a crash mid-write never clobbers a previously good report with a truncated one. Parent directories are created as needed. The `--fail-on` exit code is unaffected: the gate trips the same whether the report went to a file or stdout. See [Writing the report to a file](#writing-the-report-to-a-file).
 - `--ignore` — in `--batch` mode, skip contract paths/addresses matching any of these comma-separated [glob](https://docs.python.org/3/library/fnmatch.html) patterns. A pattern matches the full path, any single path component, or — when it contains a `/` — any sub-path, so `--ignore node_modules,lib,test` drops vendored/third-party trees (e.g. an OpenZeppelin import tree) from a recursive directory scan or a list file without hand-pruning the input. Globs support `*`, `?`, and `[seq]`. Ignored items produce no output and no error. Default: ignore nothing. No effect in single `--contract` mode. See [Excluding paths from a batch scan](#excluding-paths-from-a-batch-scan).
@@ -836,6 +839,59 @@ A GitHub Actions step that should block the PR on a high-severity lead:
 - run: omen --contract MyContract.sol --input-type sol --check all --fail-on high
 ```
 
+### Suppressing known findings with a baseline
+
+`--fail-on` is the right gate for new code, but it makes adopting omen on an
+*existing* codebase painful: the very first run lights up red on every
+pre-existing finding, so teams disable the gate or learn to ignore it.
+`--baseline` is the fix — the standard "triage / baseline" move every mature
+scanner ships (cf. Slither's `--triage-mode`, semgrep's `--baseline`, trivy's
+`.trivyignore`). Capture today's findings once, commit that file, then gate only
+on findings introduced *after* it.
+
+```bash
+# 1) Capture the current findings as a known-good baseline (once).
+omen --contract MyContract.sol --input-type sol --check all -o omen-baseline.json
+git add omen-baseline.json && git commit -m "omen baseline"
+
+# 2) In CI, suppress the baselined findings and fail only on NEW ones.
+omen --contract MyContract.sol --input-type sol --check all \
+     --baseline omen-baseline.json --fail-on high
+```
+
+The second run prints and gates on the findings that are *new* relative to the
+baseline only: a re-scan of unchanged code surfaces nothing and exits `0`, while
+a newly-introduced high-severity bug still trips the gate (exit `3`). The
+suppression happens **before** `--min-severity`/`--min-confidence`, `--sort`,
+`--limit`, and `--fail-on`, so a baselined finding never appears in the report,
+never counts toward `total_findings`, and never trips the gate.
+
+A finding's identity for baseline matching is its **category + detector +
+contract + location** (the source line range in source mode, or the opcode
+offset in bytecode/address mode). Severity and wording are deliberately *not*
+part of the identity, so re-stamping a class with `--severity-override`, or a
+Slither release that rewords a detector message, will not make a known finding
+look new.
+
+The baseline file is just a saved omen JSON report, so it composes with the rest
+of the tooling:
+
+- **Batch mode** works the same way: the baseline is matched per contract, so a
+  whole-program `--batch` scan fails only on new findings. A natural batch
+  baseline is the JSONL output of a previous batch run (`--baseline` reads either
+  a single report object or a JSONL stream of them).
+- A **clean baseline** (a scan that found nothing) is valid and suppresses
+  nothing — useful as a placeholder you regenerate as the code evolves.
+- Like every other flag, `baseline` can be set in `omen.toml`, so a committed
+  `baseline = "omen-baseline.json"` makes "fail only on new findings" the default
+  for every invocation.
+- A missing, unreadable, or non-JSON baseline is a usage error (exit `2`),
+  surfaced before any compiler/network work — a broken baseline fails loudly
+  rather than silently letting every finding through the gate.
+
+To refresh the baseline after intentionally accepting (or fixing) findings,
+re-run step 1 and commit the new file.
+
 ### Writing the report to a file
 
 By default omen prints the report to stdout, which composes naturally with
@@ -911,8 +967,9 @@ The contract is deliberately small and predictable:
   are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
   the short alias for `output-file`. Settable keys: `contract`, `batch`,
   `input-type`, `check`, `exclude-check`, `ignore`, `parallel`, `timeout`,
-  `batch-summary`, `rpc-url`, `format`, `min-confidence`, `min-severity`,
-  `severity-override`, `sort`, `limit`, `fail-on`, `output-file`.
+  `batch-summary`, `baseline`, `rpc-url`, `format`, `min-confidence`,
+  `min-severity`, `severity-override`, `sort`, `limit`, `fail-on`,
+  `output-file`.
 - **Values are validated** against the same choices the CLI enforces, so a typo
   in the file is caught at load time with a clear, file-named error (exit `2`),
   not silently fed into the analyzer.

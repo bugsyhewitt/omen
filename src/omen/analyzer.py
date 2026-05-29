@@ -31,10 +31,12 @@ from .findings import (
     apply_severity_overrides,
     confidence_rank,
     fail_on_triggered,
+    load_baseline_fingerprints,
     parse_limit,
     parse_severity_overrides,
     severity_rank,
     sort_key,
+    suppress_baseline,
 )
 from .solc_env import require_solc
 from .sources import InputError, SourceInput, load_input
@@ -520,6 +522,7 @@ def analyze(
     fail_on: str | None = None,
     exclude_check: str | None = None,
     severity_override: str | None = None,
+    baseline: str | None = None,
 ) -> AnalysisReport:
     """Top-level entry point: load input, run checks, return a report.
 
@@ -567,10 +570,25 @@ def analyze(
     that would otherwise be filtered out and trip the CI gate at the pinned
     level). Only severity changes — category/confidence/evidence/detector are
     preserved.
+
+    *baseline* (POST_V01) is the path to a previously-saved omen JSON report (a
+    single-contract report or one line of a ``--batch`` JSONL stream) used as a
+    known-good baseline. ``None`` (the default) suppresses nothing. When given,
+    every finding whose stable fingerprint (category + detector + contract +
+    location — see ``finding_fingerprint``) already appears in the baseline is
+    dropped *before* the ``--min-severity``/``--min-confidence`` filters, the
+    ``--sort`` ordering, the ``--limit`` cap, and the ``--fail-on`` gate — so a
+    baselined finding neither shows in the report, counts toward
+    ``total_findings``, nor trips the CI gate. Only findings introduced *after*
+    the baseline do. This is the "adopt omen on a legacy codebase" CI move:
+    capture today's findings as a baseline, then fail the build only on new ones.
     """
     limit_n = parse_limit(limit)
     checks = resolve_checks(check, exclude_check)
     overrides = parse_severity_overrides(severity_override)
+    baseline_fps = (
+        load_baseline_fingerprints(baseline) if baseline else None
+    )
     src = load_input(contract, input_type, rpc_url)
 
     if src.input_type in ("sol", "vyper"):
@@ -581,6 +599,11 @@ def analyze(
     # Re-stamp severities per the override map first, so the filter/sort/gate
     # pipeline below all act on the org-tuned severity rather than the default.
     findings = apply_severity_overrides(findings, overrides)
+    # Suppress findings already present in the baseline (POST_V01) before any
+    # filter/sort/cap/gate, so a baselined finding never appears, never counts
+    # toward total_findings, and never trips the --fail-on gate — only findings
+    # new relative to the baseline flow on through the pipeline.
+    findings = suppress_baseline(findings, baseline_fps)
     findings = _filter_by_confidence(findings, min_confidence)
     findings = _filter_by_severity(findings, min_severity)
     findings = _sort_findings(findings, sort)

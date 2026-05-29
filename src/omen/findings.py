@@ -231,6 +231,159 @@ def apply_severity_overrides(
     return findings
 
 
+def finding_fingerprint(finding: "Finding | dict[str, Any]") -> str:
+    """Build a stable identity string for *finding* (for baseline matching).
+
+    The fingerprint is what makes a ``--baseline`` (POST_V01) suppression "the
+    same finding across two runs". It must be stable for a finding that has not
+    genuinely changed, yet distinguish two genuinely different findings — so it
+    is built from the parts of a finding that identify *what and where* the issue
+    is, and deliberately **excludes** the parts that can change without the
+    finding being new:
+
+      - **Included:** ``category`` (the omen class), ``detector`` (the underlying
+        check id), ``contract`` (the contract name, if any), and the *location* —
+        the sorted source mappings (``Contract.sol#12-18``) in source mode, or
+        the sorted opcode offsets in bytecode/address mode. These are the
+        finding's identity: same bug, same place.
+      - **Excluded:** ``severity`` (a ``--severity-override`` re-stamp must not
+        make a known finding look new), ``confidence``, ``title``, and
+        ``description`` (wording can drift between Slither releases without the
+        underlying issue changing).
+
+    Accepts either a :class:`Finding` object or the report-dict form of one (the
+    shape produced by ``Finding.to_dict()`` / loaded from a baseline JSON file),
+    so the same fingerprint is computed for live findings and for the findings
+    read out of a baseline report — that symmetry is what lets the two match.
+
+    The result is a single ``|``-joined string; it is a content fingerprint, not
+    a cryptographic hash — collisions across genuinely different findings are not
+    a security concern here (the worst case is suppressing one extra lead), and a
+    readable string keeps the baseline behaviour debuggable.
+    """
+    if isinstance(finding, Finding):
+        category = finding.category
+        detector = finding.detector
+        contract = finding.contract or ""
+        source_mapping = list(finding.evidence.source_mapping)
+        opcodes = finding.evidence.opcodes
+    else:
+        category = str(finding.get("category", ""))
+        detector = str(finding.get("detector", ""))
+        contract = str(finding.get("contract") or "")
+        evidence = finding.get("evidence") or {}
+        source_mapping = list(evidence.get("source_mapping") or [])
+        opcodes = evidence.get("opcodes") or []
+
+    # Location component: sorted source mappings (source mode) joined, else the
+    # sorted opcode offsets (bytecode mode). Sorting makes the fingerprint
+    # order-insensitive, so a detector that reports the same locations in a
+    # different order across runs still matches.
+    locations = sorted(str(loc) for loc in source_mapping)
+    if not locations:
+        offsets = sorted(
+            str(op.get("offset", "")) for op in opcodes if isinstance(op, dict)
+        )
+        locations = [f"@{off}" for off in offsets if off != ""]
+    location = ",".join(locations)
+
+    return "|".join([category, detector, contract, location])
+
+
+def load_baseline_fingerprints(path: "str") -> "set[str]":
+    """Load an omen JSON report from *path* and return its finding fingerprints.
+
+    *path* is a previously-saved omen report (single-contract JSON, or one line
+    of a ``--batch`` JSONL stream) — the "known-good" baseline. Each finding in
+    it is reduced to a :func:`finding_fingerprint`, and the set of those
+    fingerprints is what a new scan's findings are matched against to suppress
+    the already-known ones.
+
+    The loader is permissive about shape so it works with both a single report
+    object (``{"findings": [...]}``) and a JSONL batch file (one report object
+    per line): a top-level ``findings`` list is read directly, and any line that
+    is itself a report object contributes its findings too. A finding entry that
+    is not a dict is skipped. An empty / findings-less baseline yields an empty
+    set (suppresses nothing) rather than an error, so a baseline captured from a
+    clean scan is valid.
+
+    Raises ``ValueError`` (which the CLI turns into a usage error, exit 2) if the
+    file cannot be read or does not parse as JSON, since a malformed baseline is
+    a user mistake worth surfacing loudly rather than silently ignoring (which
+    would let every finding through the gate).
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"--baseline: cannot read {path!r}: {exc}") from exc
+
+    def _collect(obj: "Any", into: "set[str]") -> None:
+        if isinstance(obj, dict):
+            findings = obj.get("findings")
+            if isinstance(findings, list):
+                for f in findings:
+                    if isinstance(f, dict):
+                        into.add(finding_fingerprint(f))
+        elif isinstance(obj, list):
+            for item in obj:
+                _collect(item, into)
+
+    fingerprints: set[str] = set()
+    stripped = text.strip()
+    if not stripped:
+        return fingerprints
+
+    # Try a single JSON document first (a single-contract report or a JSON array
+    # of reports); fall back to JSONL (one report per line) for batch output.
+    try:
+        doc = json.loads(stripped)
+    except json.JSONDecodeError:
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"--baseline: {path!r} is not valid JSON or JSONL: {exc}"
+                ) from exc
+            _collect(doc, fingerprints)
+        return fingerprints
+
+    _collect(doc, fingerprints)
+    return fingerprints
+
+
+def suppress_baseline(
+    findings: "list[Finding]", baseline: "set[str] | None"
+) -> "list[Finding]":
+    """Drop findings whose fingerprint is in the *baseline* set (POST_V01).
+
+    Returns a new list containing only the findings whose
+    :func:`finding_fingerprint` is **not** present in *baseline* — i.e. the
+    findings that are *new* relative to the baseline. ``None`` or an empty
+    *baseline* is a no-op (every finding is kept), so a run without ``--baseline``
+    behaves exactly as before.
+
+    This is the standard "adopt a scanner on a legacy codebase" CI move
+    (cf. Slither ``--triage-mode``, semgrep ``--baseline``, trivy
+    ``.trivyignore``): capture today's findings as a baseline, then let CI fail
+    only on findings introduced *after* it. It runs in ``analyze`` *before* the
+    ``--min-severity``/``--min-confidence`` filters, the ``--sort`` ordering, the
+    ``--limit`` cap, and crucially the ``--fail-on`` gate, so a baselined finding
+    neither appears in the report, counts toward ``total_findings``, nor trips the
+    CI gate — only genuinely new findings do.
+    """
+    if not baseline:
+        return findings
+    return [f for f in findings if finding_fingerprint(f) not in baseline]
+
+
 # Confidence ordering, low -> high. Used by the --min-confidence filter
 # (POST_V01 Rank 8). Slither emits low/medium/high confidence on its findings;
 # omen's bytecode heuristics (POST_V01 Rank 1) default to "low". A bounty
