@@ -24,10 +24,11 @@ from __future__ import annotations
 import fnmatch
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Generator
 
-from .analyzer import analyze
+from .analyzer import AnalysisReport, analyze
 from .solc_env import SolcUnavailableError
 from .sources import InputError
 from .vyper_env import VyperUnavailableError
@@ -144,6 +145,47 @@ def parse_ignore(ignore: str | None) -> list[str]:
     return patterns
 
 
+def parse_parallel(parallel: int | str | None) -> int:
+    """Parse a ``--parallel`` value into a worker count (a positive int).
+
+    *parallel* is the number of contracts a ``--batch`` scan analyzes
+    concurrently. ``None`` (the flag's default sentinel) and ``1`` both mean
+    "no concurrency" — the historical sequential behaviour, unchanged. A value
+    of ``2`` or more runs that many analyses at once.
+
+    Mirrors the ``--limit`` validation convention: a positive integer only.
+    Accepts an ``int`` directly or a decimal string (so a config-file value or a
+    raw CLI string both work). ``0`` and negatives are rejected because a
+    zero/negative worker count is meaningless and almost always a typo — omen
+    errors loudly instead of silently scanning nothing or falling back. ``bool``
+    is rejected (``True``/``False`` are ints in Python but never a sensible
+    worker count).
+
+    Returns ``1`` for the no-concurrency case so callers can treat the result
+    uniformly as the worker count.
+    """
+    if parallel is None:
+        return 1
+    if isinstance(parallel, bool):
+        raise ValueError(
+            f"--parallel must be a positive integer, got {parallel!r}"
+        )
+    if isinstance(parallel, int):
+        n = parallel
+    else:
+        try:
+            n = int(str(parallel), 10)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"--parallel must be a positive integer, got {parallel!r}"
+            )
+    if n <= 0:
+        raise ValueError(
+            f"--parallel must be a positive integer (>= 1), got {n}"
+        )
+    return n
+
+
 def _is_ignored(item: str, patterns: list[str]) -> bool:
     """Return True if *item* matches any of the ignore *patterns*.
 
@@ -211,6 +253,52 @@ def _iter_items(
         )
 
 
+def _analyze_one(
+    item: str,
+    *,
+    input_type: str,
+    check: str,
+    rpc_url: str | None,
+    min_confidence: str,
+    min_severity: str,
+    sort: str,
+    limit: int | str | None,
+    fail_on: str | None,
+    exclude_check: str | None,
+    severity_override: str | None,
+) -> tuple[AnalysisReport | None, str | None]:
+    """Analyze a single batch *item*; return ``(report, error_message)``.
+
+    Exactly one of the pair is non-None: a successful scan yields
+    ``(report, None)``; a failure yields ``(None, "...")`` with a human-readable
+    message (the same text the sequential loop wrote to stderr). Pulling the
+    per-item work into a pure-ish function lets ``run_batch`` drive it either
+    sequentially or across a ``ThreadPoolExecutor`` (POST_V01 — ``--parallel``)
+    without duplicating the try/except, while keeping every order-sensitive
+    side effect (stdout JSONL, the gate, the summary) in the caller where the
+    input order is known.
+    """
+    try:
+        report = analyze(
+            contract=item,
+            input_type=input_type,
+            check=check,
+            rpc_url=rpc_url,
+            min_confidence=min_confidence,
+            min_severity=min_severity,
+            sort=sort,
+            limit=limit,
+            fail_on=fail_on,
+            exclude_check=exclude_check,
+            severity_override=severity_override,
+        )
+    except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
+        return None, f"omen: batch error [{item}]: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"omen: batch analysis failed [{item}]: {exc}"
+    return report, None
+
+
 def run_batch(
     path: str,
     input_type: str,
@@ -226,6 +314,7 @@ def run_batch(
     ignore: str | None = None,
     batch_summary: bool = False,
     severity_override: str | None = None,
+    parallel: int | str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -279,45 +368,51 @@ def run_batch(
     (and composes with the per-item ``--min-severity``/``--sort``/``--fail-on``
     pipeline exactly as in single-contract mode).
 
+    *parallel* (POST_V01) is the number of contracts analyzed concurrently.
+    ``None``/``1`` (the default) keeps the historical sequential, streaming
+    behaviour: each JSONL line is printed as it is produced, in input order. A
+    value of ``2`` or more analyzes that many contracts at once via a thread
+    pool — the speedup for the real bounty workflow of scanning a whole program
+    scope (dozens to hundreds of contracts), where each scan's wall time is
+    dominated by the solc/vyper compiler subprocess that releases the GIL.
+    Concurrency never reorders the result: output, the ``--fail-on`` gate (the
+    OR across items), the error count, and the ``--batch-summary`` roll-up are
+    all assembled in deterministic **input order** regardless of which scan
+    finishes first, so a parallel run's JSONL stream and exit code are
+    byte-for-byte identical to the sequential run's. The trade-off vs. the
+    sequential path is memory: a parallel run buffers the ordered results before
+    emitting, rather than streaming line by line.
+
     Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
     tripped on any item; otherwise 0.
     """
+    workers = parse_parallel(parallel)
     any_error = False
     error_count = 0
     gate_tripped = False
     buffered: list[str] = []
     # Collected per-contract report dicts, kept only when --batch-summary is on
     # (the aggregate is built from them); otherwise we never retain them, so a
-    # large batch without the summary keeps its streaming, low-memory behaviour.
+    # large sequential batch without the summary keeps its streaming, low-memory
+    # behaviour. (A parallel batch always materialises the ordered results.)
     collected: list[dict[str, Any]] = []
     ignore_patterns = parse_ignore(ignore)
+    items = list(_iter_items(path, input_type, ignore_patterns))
 
-    for item in _iter_items(path, input_type, ignore_patterns):
-        try:
-            report = analyze(
-                contract=item,
-                input_type=input_type,
-                check=check,
-                rpc_url=rpc_url,
-                min_confidence=min_confidence,
-                min_severity=min_severity,
-                sort=sort,
-                limit=limit,
-                fail_on=fail_on,
-                exclude_check=exclude_check,
-                severity_override=severity_override,
-            )
-        except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
-            print(f"omen: batch error [{item}]: {exc}", file=sys.stderr)
+    def _consume(report: AnalysisReport | None, error: str | None) -> None:
+        """Fold one (report, error) result into the run's ordered state.
+
+        Called in input order in both the sequential and parallel paths, so
+        every order-sensitive side effect — the stdout JSONL line, the gate OR,
+        the error tally, the summary collection — happens deterministically.
+        """
+        nonlocal any_error, error_count, gate_tripped
+        if error is not None:
+            print(error, file=sys.stderr)
             any_error = True
             error_count += 1
-            continue
-        except Exception as exc:  # noqa: BLE001
-            print(f"omen: batch analysis failed [{item}]: {exc}", file=sys.stderr)
-            any_error = True
-            error_count += 1
-            continue
-
+            return
+        assert report is not None
         if report.gate_triggered:
             gate_tripped = True
         report_dict = report.to_dict()
@@ -328,6 +423,40 @@ def run_batch(
             print(line)
         else:
             buffered.append(line)
+
+    def _run_one(item: str) -> tuple[AnalysisReport | None, str | None]:
+        return _analyze_one(
+            item,
+            input_type=input_type,
+            check=check,
+            rpc_url=rpc_url,
+            min_confidence=min_confidence,
+            min_severity=min_severity,
+            sort=sort,
+            limit=limit,
+            fail_on=fail_on,
+            exclude_check=exclude_check,
+            severity_override=severity_override,
+        )
+
+    if workers <= 1 or len(items) <= 1:
+        # Sequential path: analyze and consume one at a time. This preserves the
+        # historical streaming behaviour (a line printed as soon as it is ready)
+        # and the low-memory profile when --batch-summary and --output-file are
+        # both off. Also taken for a 0/1-item batch, where a pool would be pure
+        # overhead.
+        for item in items:
+            _consume(*_run_one(item))
+    else:
+        # Parallel path: submit every item to a bounded thread pool, then consume
+        # the results strictly in input order (executor.map preserves submission
+        # order), so the JSONL stream / gate / summary are identical to the
+        # sequential run — only faster. The wall-clock win comes from the
+        # solc/vyper compiler subprocess each scan shells out to, which releases
+        # the GIL while it runs.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for report, error in pool.map(_run_one, items):
+                _consume(report, error)
 
     if output_file is not None:
         from .cli import write_output

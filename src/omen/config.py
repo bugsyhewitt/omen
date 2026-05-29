@@ -73,9 +73,10 @@ _CHOICE_KEYS: dict[str, tuple[str, ...]] = {
     "fail_on": ("never", "informational", "low", "medium", "high", "critical"),
 }
 
-# ``limit`` is a positive int; ``output_file`` is a path string. Listed here so
-# they are recognised keys; their type is validated below.
-_INT_KEYS = frozenset({"limit"})
+# ``limit`` and ``parallel`` are positive ints; ``output_file`` is a path string.
+# Listed here so they are recognised keys; their type is validated below.
+# (``parallel`` is the --batch concurrency worker count, POST_V01.)
+_INT_KEYS = frozenset({"limit", "parallel"})
 _PATH_KEYS = frozenset({"output_file"})
 
 # ``batch_summary`` is a boolean flag (the --batch-summary store_true option,
