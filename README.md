@@ -103,7 +103,7 @@ need **no** compiler at all.
 ```
 omen --contract <path-or-address> \
      --input-type {sol,vyper,bytecode,address} \
-     --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,delegatecall,upgrade,overflow,weak-randomness,all} \
+     --check CATEGORY[,CATEGORY...]   # a category, 'all', or a comma-separated list \
      [--rpc-url URL] \
      [--format {json,text,h1md,sarif}] \
      [--min-confidence {low,medium,high}] \
@@ -117,7 +117,7 @@ omen --list-checks [--format {text,json}]
 
 - `--contract` — a path to a `.sol` source file, a path to a `.vy` (Vyper) source file, a path to a `.bin` (hex EVM runtime bytecode) file, or an on-chain contract address.
 - `--input-type` — how to interpret `--contract`.
-- `--check` — which class to scan for (`all` runs every class). Default: `all`.
+- `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
 - `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), or `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
@@ -126,6 +126,39 @@ omen --list-checks [--format {text,json}]
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
 - `--list-checks` — print every detection class (its default severity, the input modes it runs in, and the underlying Slither detector(s) it maps to) and exit. Honors `--format text` (default) or `--format json`. Requires no contract, compiler, or network — see [Listing the detection classes](#listing-the-detection-classes).
+
+### Scoping a scan to specific classes
+
+`--check` accepts a single category, `all`, or a **comma-separated list** of
+categories. The list lets you scope a scan to exactly the detection surface a
+program needs in one run — instead of either accepting the noise of `all` or
+running several single-category scans and merging them.
+
+```bash
+# The proxy/admin attack cluster: access control, delegatecall, and upgrade.
+omen --contract Proxy.sol --input-type sol \
+     --check access-control,delegatecall,upgrade
+
+# Just the two MAIAN value-flow classes.
+omen --contract Token.sol --input-type sol --check prodigal,greedy
+```
+
+Resolution rules:
+
+- The categories run in the order you list them, and duplicates are removed
+  (so `reentrancy,reentrancy` runs `reentrancy` once). The report's `checks`
+  field echoes the resolved list.
+- Whitespace around items, and empty segments from a trailing or doubled comma,
+  are ignored (`reentrancy, suicidal,` is fine).
+- Every name must be a known category; an unknown one is a usage error
+  (exit code `2`) that names the offender.
+- `all` must be used alone — `all,reentrancy` is rejected, because `all`
+  already covers every class.
+
+The list composes with everything downstream: `--min-severity`,
+`--min-confidence`, `--sort`, `--limit`, and `--fail-on` all apply to the
+findings the scoped check surfaces. In `--batch` mode the same `--check` list
+applies to every contract.
 
 ### Listing the detection classes
 

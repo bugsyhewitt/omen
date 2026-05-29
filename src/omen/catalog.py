@@ -104,9 +104,10 @@ def to_text(catalog: dict[str, Any]) -> str:
         )
     lines.append("")
     lines.append(
-        "Use --check <category> to run one class, or --check all (default). "
-        "Pass any of these to --check. SEVERITY is the default; source-mode "
-        "findings follow Slither's per-finding impact."
+        "Use --check <category> to run one class, --check all (default) to run "
+        "every class, or a comma-separated list (e.g. "
+        "--check access-control,delegatecall,upgrade) to scope a scan. SEVERITY "
+        "is the default; source-mode findings follow Slither's per-finding impact."
     )
     return "\n".join(lines)
 

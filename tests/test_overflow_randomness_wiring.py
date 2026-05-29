@@ -10,6 +10,7 @@ half-wired category, mirroring the R2/R5 wiring tests.
 from __future__ import annotations
 
 from omen import CATEGORIES
+from omen.analyzer import resolve_checks
 from omen.cli import build_parser
 from omen.detectors import CATEGORY_TO_SLITHER, VYPER_SUPPORTED_CATEGORIES
 from omen.findings import DEFAULT_SEVERITY, Severity
@@ -42,11 +43,12 @@ def test_default_severity_new_categories():
     assert DEFAULT_SEVERITY["weak-randomness"] == Severity.MEDIUM
 
 
-def test_cli_check_choices_include_new_categories():
-    parser = build_parser()
-    check_action = next(a for a in parser._actions if a.dest == "check")
+def test_cli_check_accepts_new_categories():
+    # R2.7 moved --check validation from argparse `choices` to resolve_checks
+    # (so it can accept a comma-separated list); the CLI accepting a category
+    # now means resolve_checks resolving it.
     for cat in NEW_CATEGORIES:
-        assert cat in check_action.choices
+        assert resolve_checks(cat) == [cat]
 
 
 def test_remediation_text_present_for_new_categories():

@@ -582,3 +582,76 @@ land.
 > through `jq` or opening a SARIF viewer. `--format text` closes that gap: it is
 > the human-readable read of exactly the findings the triage pipeline produced,
 > the presentation sibling to the SARIF/JSON machine formats.
+
+---
+
+### R2.7. Comma-separated `--check` category lists
+
+**Rank: 7 (Rotation 2) — zero-dependency detection-surface selection**
+
+> **STATUS: ✅ IMPLEMENTED (R15, 2026-05-28).** `--check` now accepts a single
+> category, the keyword `all`, **or a comma-separated list** of categories (e.g.
+> `--check access-control,delegatecall,upgrade` — the proxy/admin attack
+> cluster). The categories run in the order listed; duplicates are removed
+> preserving first-seen order; whitespace and empty segments from a trailing or
+> doubled comma are tolerated; an unknown name is a usage error (exit `2`) that
+> names the offender; and `all` must be used alone (`all,reentrancy` is rejected
+> because `all` already covers every class). The report's `checks` field echoes
+> the resolved list. Built the same zero-dependency way as the rest of Rotation
+> 2: the parsing/validation/dedupe logic is a pure extension of the existing
+> `resolve_checks()` primitive in `analyzer.py` (no new module, no new
+> dependency), and the CLI wires it in by dropping argparse's `choices=` on
+> `--check` (which could only validate a single token) and validating the raw
+> value through `resolve_checks()` in `main()` before dispatch, surfacing a bad
+> value as an argparse-style exit-`2` usage error. **Wiring-test migration:**
+> three existing `test_*_wiring.py` tests asserted the new categories appeared in
+> `check_action.choices`; since validation moved off argparse `choices`, those
+> assertions were rewritten to assert `resolve_checks(cat) == [cat]` — the same
+> intent ("the CLI accepts this category") against the new validation mechanism.
+> Tests in `tests/test_check_list.py` (resolve_checks: backward-compatible
+> single/`all`, two/three-category lists, user-order preservation, dedupe,
+> whitespace/trailing-comma tolerance, unknown-member rejection naming the
+> offender, empty/only-commas rejection, `all`-alone-in-a-list expansion,
+> `all`-combined rejection, every-category-individually, full-list-of-all; CLI
+> surface: help advertises the syntax, parser accepts a raw comma list without
+> argparse rejection, exit-`2` on a bad member and on `all,other`; bytecode-mode
+> end-to-end subprocess runs proving a list scopes the scan to exactly the
+> requested classes and *excludes* unrequested ones). README "Scoping a scan to
+> specific classes" section documents it; the `--list-checks` footer now mentions
+> the list syntax. Pure input-selection change — no analysis-path, detector, or
+> dependency changes, and the comma-list resolution imports nothing heavy, so it
+> runs offline / in CI / on a fresh checkout with no compiler installed.
+>
+> **Why (R15 research-lap reasoning):** Rotation 2 R2.1–R2.6 built out the entire
+> *output* surface — list the classes (`--list-checks`), filter the findings by
+> severity/confidence (`--min-severity`/`--min-confidence`), order them
+> worst-first (`--sort`), cap them (`--limit`), gate CI on them (`--fail-on`), and
+> render them for a human (`--format text`). Every one of those operates on the
+> findings *after* analysis. The one axis the Rotation 2 work never touched is the
+> *input* axis: which detectors actually run. `--check` had been single-category
+> or `all` since v0.1, so a bounty hunter assessing a specific program scope — say
+> an upgradeable proxy, where the relevant surface is exactly
+> `access-control,delegatecall,upgrade` — had only two bad options: run `--check
+> all` and wade through findings from seven irrelevant classes, or run three
+> separate scans and merge the JSON by hand. With the roster now at ten classes,
+> the gap between "one class" and "all ten" is wide enough that selecting a subset
+> is the natural next zero-dependency lever, and it is *foundational* rather than
+> cosmetic: it shapes the detection surface itself, the input-side complement to
+> the output-side triage pipeline the rest of Rotation 2 built. Among the
+> remaining unshipped candidates (a `--exclude` inverse, per-category severity
+> overrides, config files), the comma-list `--check` is the highest
+> value-per-token: it reuses the existing `resolve_checks()` seam entirely, adds
+> no module and no dependency, is fully backward compatible (a single category and
+> `all` behave exactly as before), and directly serves the dominant real workflow
+> of scoping a scan to a program's actual attack surface.
+
+---
+
+> **Rotation 2 status (as of R15, 2026-05-28).** R2.1–R2.7 shipped. The Rotation 2
+> theme has been the triage/UX surface around the now-ten-class detector roster:
+> R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →
+> human-readable render) and R2.7 closed the *input* axis (scope which classes
+> run). A fresh full threat-landscape re-scan + re-ranking is still owed before
+> Rotation 2 is declared complete; remaining un-ranked candidates noted during the
+> R15 lap include a `--exclude` inverse of the `--check` list, per-category
+> severity overrides, and a config-file form of the now-many CLI flags.
