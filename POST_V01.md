@@ -826,6 +826,73 @@ land.
 
 ---
 
+### R2.11. `--ignore` batch path/pattern exclusion
+
+**Rank: 11 (Rotation 2) — zero-dependency batch input-selection axis**
+
+> **STATUS: ✅ IMPLEMENTED (R19, 2026-05-29).** `--ignore PATTERN[,PATTERN...]`
+> is a comma-separated list of `fnmatch` glob patterns; in `--batch` mode any
+> contract path/address the scan would otherwise visit that matches one is
+> skipped before analysis. The motivating case is the whole-repo scan: pointed
+> at a real repository, omen's recursive `.sol` walk pulls in vendored and
+> third-party code (`node_modules`, a Foundry `lib/` tree, an OpenZeppelin
+> import tree, mocks under `test/`) that is not the attack surface, wastes
+> analysis time, and floods the JSONL stream. `--ignore node_modules,lib,test`
+> drops those up front without hand-pruning the input. Matching is permissive so
+> the common cases need no `*/…/*` boilerplate: a pattern matches the full path
+> as a glob, **or** any single path component (bare `node_modules` hits
+> `repo/node_modules/X.sol`), **or** — when it contains a `/` — any sub-path
+> (`lib/openzeppelin` hits `repo/lib/openzeppelin/Foo.sol`). Globs support
+> `*`/`?`/`[seq]`; OR semantics across patterns. Applies to both `--batch` input
+> shapes — a directory's recursive walk and a newline-delimited list file (paths
+> *or* addresses). An ignored item produces no JSONL line and no error, so the
+> exit code reflects only the contracts actually scanned. **No effect in single
+> `--contract` mode** (one explicit target, nothing to filter) — accepted there
+> as a no-op so a committed `omen.toml` carrying `ignore` still works for single
+> scans. An all-blank value (`--ignore ,,`) is a usage error (exit `2`), not a
+> silent no-op. Implemented entirely in `batch.py` (`parse_ignore` splits/cleans
+> the value; `_is_ignored` applies the three match rules; `_iter_items` filters
+> at the source so the existing `run_batch` loop is unchanged) plus a `cli.py`
+> flag + early `parse_ignore` validation, and an `ignore` key added to
+> `config.py`'s settable set. Pure stdlib (`fnmatch`) — **no dependency**, runs
+> offline / in CI / on a fresh checkout. Tests in `tests/test_ignore.py` (31
+> cases: parser — none/single/comma-list/whitespace/empty-entry/all-blank-raises;
+> matcher — empty/component/full-glob/sub-path/`?`/`[seq]`/multi-OR/address;
+> `_iter_items` — directory and list-file filtering, no-ignore no-op, multi-
+> pattern; `run_batch` — skips ignored files via mocked analyze, none no-op,
+> all-blank raises; config — `ignore` key accepted / non-string rejected; CLI —
+> help, namespace parse, default `None`, exit-2 on all-blank, single-contract
+> no-op end-to-end). README gains an "Excluding paths from a batch scan" section
+> plus usage-block, flag-list, and config-key mentions. No analysis-path,
+> detector, format, or dependency change.
+>
+> **Why (R19 research-lap reasoning):** Rotation 2 closed the *output* pipeline
+> (R2.1–R2.6), the `--check` *class* axis from both directions (R2.7–R2.8), the
+> *destination* axis (R2.9), and *invocation ergonomics* (R2.10 `--config`). The
+> R18 status note left three un-ranked candidates: per-category severity
+> overrides, `--timeout` per-check isolation, and `--quiet`. `--timeout` is the
+> riskiest — the roadmap has flagged twice that Slither "does not cleanly expose"
+> per-check execution isolation, so it needs subprocess wrapping that risks the
+> Anti-Abstraction and Simplicity gates. `--quiet` is near-vacuous (omen prints
+> only the report to stdout). Per-category severity overrides duplicate the
+> existing `--min-severity` lever at higher complexity. The untouched axis with
+> real value is **batch *input selection by path***: every class/filter flag
+> shapes *which findings* or *which classes*, and `--check`/`--exclude-check`
+> select classes — but nothing selects *which files* a batch scan visits. On a
+> real repo that is the difference between a focused first-party scan and a
+> hundred-line JSONL stream of vendored noise. `--ignore` is the cheapest,
+> highest-value-per-token move left: zero dependency (`fnmatch` is stdlib),
+> bounded scope (it slots into the existing `_iter_items` generator — the
+> `run_batch` loop, analyzer, detectors, and formats are untouched), fully
+> backward compatible (omitting it is the historical "scan everything"), and it
+> mirrors the existing comma-list/validation/config-key conventions one-for-one.
+> The one piece of real engineering is the three-way match rule, chosen so the
+> 90%-case (`--ignore node_modules`) works without glob boilerplate. Remaining
+> candidates for a future lap: `--timeout` (still needs Slither subprocess
+> isolation), per-category severity overrides, `--quiet`.
+
+---
+
 > **Rotation 2 status (as of R18, 2026-05-29).** R2.1–R2.10 shipped. The Rotation 2
 > theme has been the triage/UX surface around the now-ten-class detector roster:
 > R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →

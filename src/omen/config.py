@@ -48,7 +48,15 @@ from . import CATEGORIES
 # so here we only require they be strings — the real check happens on the merged
 # value, identically to a value passed on the CLI.
 _STR_KEYS = frozenset(
-    {"contract", "batch", "input_type", "check", "exclude_check", "rpc_url"}
+    {
+        "contract",
+        "batch",
+        "input_type",
+        "check",
+        "exclude_check",
+        "rpc_url",
+        "ignore",
+    }
 )
 
 _CHOICE_KEYS: dict[str, tuple[str, ...]] = {

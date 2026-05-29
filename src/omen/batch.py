@@ -21,6 +21,7 @@ Exit code:
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import sys
 from pathlib import Path
@@ -32,16 +33,80 @@ from .sources import InputError
 from .vyper_env import VyperUnavailableError
 
 
-def _iter_items(path: str, input_type: str) -> Generator[str, None, None]:
+def parse_ignore(ignore: str | None) -> list[str]:
+    """Parse a ``--ignore`` value into a list of glob patterns.
+
+    *ignore* is a comma-separated list of ``fnmatch``-style glob patterns
+    (``*``, ``?``, ``[seq]``). Surrounding whitespace on each pattern is
+    stripped and empty entries are dropped, so ``"node_modules, lib"`` and
+    ``"node_modules,lib"`` are equivalent. ``None`` (the flag's default) and an
+    all-blank value both yield an empty list — no exclusion.
+
+    Raises ``ValueError`` if the value is non-empty but contains only blanks
+    around the commas (e.g. ``--ignore ,,``), since that is almost always a
+    typo: the user meant to exclude something but supplied no pattern.
+    """
+    if ignore is None:
+        return []
+    patterns = [token.strip() for token in ignore.split(",")]
+    patterns = [token for token in patterns if token]
+    if not patterns and ignore.strip():
+        raise ValueError(
+            f"--ignore value {ignore!r} contains no usable patterns"
+        )
+    return patterns
+
+
+def _is_ignored(item: str, patterns: list[str]) -> bool:
+    """Return True if *item* matches any of the ignore *patterns*.
+
+    Matching is permissive and aimed at the common "skip vendored code" case:
+    a pattern matches if it matches the full path string OR any individual path
+    component (so a bare ``node_modules`` excludes ``a/node_modules/X.sol``
+    without the caller needing the ``*/node_modules/*`` boilerplate), and a
+    pattern containing a path separator is also tried against the full path with
+    an implicit leading ``*`` (so ``lib/forge-std`` matches a deeper prefix).
+    All matching is via :func:`fnmatch.fnmatch`, so ``*``/``?``/``[seq]`` work.
+    """
+    if not patterns:
+        return False
+    norm = item.replace("\\", "/")
+    parts = norm.split("/")
+    for pattern in patterns:
+        pat = pattern.replace("\\", "/")
+        if fnmatch.fnmatch(norm, pat):
+            return True
+        if any(fnmatch.fnmatch(part, pat) for part in parts):
+            return True
+        # A pattern with a separator is also matched as a sub-path anywhere in
+        # the path (implicit leading "*"), e.g. "lib/openzeppelin" hits
+        # "repo/lib/openzeppelin/Foo.sol".
+        if "/" in pat and fnmatch.fnmatch(norm, f"*{pat}*"):
+            return True
+    return False
+
+
+def _iter_items(
+    path: str, input_type: str, ignore: list[str] | None = None
+) -> Generator[str, None, None]:
     """Yield contract targets from *path*.
 
     If *path* is a directory: yield all ``.sol`` files found recursively.
     If *path* is a file: yield each non-blank, non-comment line.
+
+    *ignore* (POST_V01 Rotation 2, R2.11) is a list of glob patterns; any
+    yielded item matching one is skipped. This lets a recursive directory scan
+    or a list file drop vendored/third-party paths (``node_modules``, ``lib``,
+    ``test``, an OpenZeppelin import tree) without hand-pruning the input.
     """
+    patterns = ignore or []
     p = Path(path)
     if p.is_dir():
         for sol_file in sorted(p.rglob("*.sol")):
-            yield str(sol_file)
+            candidate = str(sol_file)
+            if _is_ignored(candidate, patterns):
+                continue
+            yield candidate
     elif p.is_file():
         with p.open("r", encoding="utf-8") as fh:
             for raw_line in fh:
@@ -49,6 +114,8 @@ def _iter_items(path: str, input_type: str) -> Generator[str, None, None]:
                 if not line:
                     continue
                 if line.startswith("#"):
+                    continue
+                if _is_ignored(line, patterns):
                     continue
                 yield line
     else:
@@ -69,6 +136,7 @@ def run_batch(
     fail_on: str | None = None,
     exclude_check: str | None = None,
     output_file: str | None = None,
+    ignore: str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -100,14 +168,22 @@ def run_batch(
     through a large batch never leaves a half-written report file in place of a
     previously good one. Per-item errors still go to stderr regardless.
 
+    *ignore* (POST_V01 Rotation 2, R2.11) is a comma-separated list of glob
+    patterns; any contract path/address the scan would otherwise visit that
+    matches one is skipped before analysis. This drops vendored/third-party
+    trees (``node_modules``, ``lib``, an OpenZeppelin import tree) from a
+    recursive directory scan or a list file so a whole-repo batch stays scoped
+    to first-party code. Ignored items produce no JSONL line and no error.
+
     Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
     tripped on any item; otherwise 0.
     """
     any_error = False
     gate_tripped = False
     buffered: list[str] = []
+    ignore_patterns = parse_ignore(ignore)
 
-    for item in _iter_items(path, input_type):
+    for item in _iter_items(path, input_type, ignore_patterns):
         try:
             report = analyze(
                 contract=item,
