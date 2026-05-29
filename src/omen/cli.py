@@ -2,6 +2,7 @@
 
     omen --contract <path-or-address> --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
+         [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
          [--rpc-url URL] [--format {json,text,h1md,sarif}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
@@ -107,6 +108,20 @@ def build_parser() -> argparse.ArgumentParser:
             "'access-control,delegatecall,upgrade' to scope a scan to the "
             f"proxy/admin attack cluster). Valid categories: {', '.join(CATEGORIES)}. "
             "'all' must be used alone."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-check",
+        default=None,
+        metavar="CATEGORY[,CATEGORY...]",
+        help=(
+            "remove one or more categories from the --check set (the inverse "
+            "selector). Accepts a single category or a comma-separated list "
+            "(not 'all'). Pairs with the default '--check all' to express "
+            "'every class except these', e.g. '--exclude-check greedy,prodigal' "
+            "to drop the two noisiest bytecode heuristics. Excluding a class "
+            "--check did not select is a no-op; excluding every selected class "
+            "is an error."
         ),
     )
     parser.add_argument(
@@ -233,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     from .analyzer import resolve_checks
 
     try:
-        resolve_checks(args.check)
+        resolve_checks(args.check, args.exclude_check)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -251,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             sort=args.sort,
             limit=args.limit,
             fail_on=args.fail_on,
+            exclude_check=args.exclude_check,
         )
 
     # --- Single-contract mode ---
@@ -272,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             sort=args.sort,
             limit=args.limit,
             fail_on=args.fail_on,
+            exclude_check=args.exclude_check,
         )
     except (InputError, SolcUnavailableError, VyperUnavailableError) as exc:
         print(f"omen: error: {exc}", file=sys.stderr)
