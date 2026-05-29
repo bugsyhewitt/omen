@@ -327,6 +327,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--batch-summary",
+        action="store_true",
+        help=(
+            "in --batch mode, print an aggregate roll-up to stderr after the "
+            "JSONL stream (POST_V01 R2.12): contracts scanned / with findings / "
+            "errored, total findings by severity (worst-first), and the "
+            "worst-affected contracts. Answers 'what did the whole-program scan "
+            "find, overall?' without piping the JSONL through jq. Goes to stderr "
+            "so the stdout JSONL stays machine-clean. No effect in single "
+            "--contract mode."
+        ),
+    )
+    parser.add_argument(
         "--fail-on",
         default="never",
         choices=["never", "informational", "low", "medium", "high", "critical"],
@@ -432,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
             exclude_check=args.exclude_check,
             output_file=args.output_file,
             ignore=args.ignore,
+            batch_summary=args.batch_summary,
         )
 
     # --- Single-contract mode ---

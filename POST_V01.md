@@ -893,6 +893,74 @@ land.
 
 ---
 
+### R2.12. `--batch-summary` aggregate batch roll-up
+
+**Rank: 12 (Rotation 2) — zero-dependency batch-aggregate read**
+
+> **STATUS: ✅ IMPLEMENTED (R20, 2026-05-29).** `--batch-summary` prints an
+> aggregate roll-up to **stderr** after a `--batch` run's JSONL stream (default
+> off). It is the *aggregate* complement to the whole Rotation 2 triage surface:
+> every prior lever — `--min-severity`/`--min-confidence`, `--sort`, `--limit`,
+> `--fail-on`, `--ignore` — operates **per contract**; none gives a read *across*
+> a whole-program scan. After scanning a program scope an analyst still had N
+> JSONL lines and had to `jq`-aggregate by hand to answer the first question:
+> "how did the scan go, overall?" The roll-up answers it directly — a header line
+> (`contracts: N scanned, M with findings, E errored`), a worst-first
+> per-severity total line (`findings: T total [1 critical, 4 high, …]`, only
+> severities that occur), an "up to five worst-affected contracts, most-first"
+> block (so the analyst knows where to look before opening the JSON), and a
+> `--fail-on gate: TRIPPED` line mirroring the exit-`3` gate. It goes to **stderr,
+> never stdout**, so the stdout JSONL stays a clean machine feed for `jq` — the
+> JSONL can be redirected to a file/pipe while the human roll-up still prints to
+> the terminal. The total uses each contract's pre-`--limit` `total_findings`, so
+> a display cap never undercounts the scope total. Built the same zero-dependency
+> way as the rest of Rotation 2: a pure `summarize_batch(reports, errors)`
+> primitive in `batch.py` (a `_SUMMARY_SEVERITY_ORDER` tuple + plain dict
+> aggregation over the same per-contract report dicts that were already streamed —
+> no I/O, no analysis, unit-testable in isolation), wired into `run_batch` (which
+> collects the report dicts only when the flag is on, preserving the streaming
+> low-memory path otherwise; it also now tracks an `error_count` for the header).
+> The CLI adds `--batch-summary` (a plain `store_true`, no-op in single
+> `--contract` mode — accepted there so a committed `omen.toml` carrying it still
+> works), and `config.py` gains a `_BOOL_KEYS` set so `batch-summary = true` is a
+> recognised, bool-validated config key. Tests in `tests/test_batch_summary.py`
+> (21 cases: summarize_batch primitive — header counts, worst-first severity
+> roll-up, only-present severities, none-found, prefer-total_findings-over-shown,
+> top-affected ordering+five-cap, singular/plural noun, gate line, empty batch,
+> missing-total_findings fallback; run_batch integration — stderr-not-stdout, off
+> by default, error-count reflected, composes-with-output-file; CLI surface —
+> help, default False, sets True; config — bool accepted, non-bool/int rejected;
+> subprocess end-to-end). README gains a "Summarizing a batch scan" section plus
+> usage-block, flag-list, and config-key mentions. Pure presentation/aggregation
+> change — no analysis-path, detector, or format change, and `summarize_batch`
+> imports nothing heavy, so it runs offline / in CI / on a fresh checkout with no
+> compiler installed.
+>
+> **Why (R20 research-lap reasoning):** R2.1–R2.11 built the full per-contract
+> triage surface (list → filter → sort → cap → gate → render), closed the
+> `--check` class axis both directions, the output destination, invocation
+> ergonomics (`--config`), and batch input-path selection (`--ignore`). The three
+> un-ranked candidates the R18/R19 status notes carried forward were `--timeout`,
+> per-category severity overrides, and `--quiet`. Each was the wrong next step:
+> `--timeout` needs Slither subprocess execution isolation the roadmap has twice
+> flagged as not cleanly exposed (Anti-Abstraction / Simplicity risk);
+> per-category severity overrides duplicate `--min-severity` at higher
+> complexity; `--quiet` is near-vacuous (omen prints only the report). The real
+> untouched axis is **batch aggregation**: every Rotation 2 lever shapes a
+> *single contract's* findings, but `--batch` — the bounty hunter's whole-program
+> workflow — has only ever emitted a raw per-contract JSONL stream with no scope
+> roll-up. That is the highest-value-per-token move left: it lives squarely in
+> the established Rotation 2 theme (triage/UX over the ten-class roster), reuses
+> the existing `run_batch` seam and the per-contract dicts already produced (no
+> extra analysis, no new module, no dependency), is fully backward compatible
+> (off by default), mirrors the existing config-key/flag conventions, and the
+> stderr/stdout split keeps the machine feed clean while serving the human read —
+> the exact pairing the `--format text` per-contract view already established, now
+> at batch scope. Remaining candidates for a future lap: `--timeout` (still needs
+> Slither subprocess isolation), per-category severity overrides, `--quiet`.
+
+---
+
 > **Rotation 2 status (as of R18, 2026-05-29).** R2.1–R2.10 shipped. The Rotation 2
 > theme has been the triage/UX surface around the now-ten-class detector roster:
 > R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →

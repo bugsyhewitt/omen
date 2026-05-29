@@ -73,9 +73,14 @@ _CHOICE_KEYS: dict[str, tuple[str, ...]] = {
 _INT_KEYS = frozenset({"limit"})
 _PATH_KEYS = frozenset({"output_file"})
 
+# ``batch_summary`` is a boolean flag (the --batch-summary store_true option,
+# POST_V01 R2.12). TOML true/false arrive as Python bool, so the file form is
+# ``batch-summary = true``.
+_BOOL_KEYS = frozenset({"batch_summary"})
+
 # Every key a config file may legally contain (canonical underscore form).
 _KNOWN_KEYS = (
-    _STR_KEYS | set(_CHOICE_KEYS) | _INT_KEYS | _PATH_KEYS
+    _STR_KEYS | set(_CHOICE_KEYS) | _INT_KEYS | _PATH_KEYS | _BOOL_KEYS
 )
 
 # Convenience aliases accepted in the file → canonical key. ``o`` mirrors the
@@ -153,6 +158,17 @@ def load_config(path: str) -> dict[str, Any]:
 
 def _validate_value(path: str, key: str, value: Any) -> Any:
     """Validate and coerce one config value for *key*, mirroring the CLI rules."""
+    if key in _BOOL_KEYS:
+        # TOML true/false arrive as Python bool. Require a real bool (an int like
+        # 1 is rejected) so a typo is caught at load time, mirroring how the CLI
+        # flag is a plain store_true.
+        if not isinstance(value, bool):
+            raise ConfigError(
+                f"--config {path}: {key} must be a boolean (true/false), "
+                f"got {value!r}"
+            )
+        return value
+
     if key in _INT_KEYS:
         # TOML ints arrive as int; reject bools (TOML true/false are bool) and
         # non-ints, and enforce the same positivity the --limit argparse type does.
