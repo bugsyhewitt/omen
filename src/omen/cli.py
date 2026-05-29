@@ -17,6 +17,7 @@
          [--min-severity {informational,low,medium,high,critical}]
          [--sort {severity,none}] [--limit N]
          [--fail-on {never,informational,low,medium,high,critical}]
+         [--parallel N] [--timeout SECONDS]
          [-o/--output-file PATH]
 
 Text in, text out. JSON is the default machine-readable format.
@@ -74,6 +75,30 @@ def _positive_int(value: str) -> int:
     if n <= 0:
         raise argparse.ArgumentTypeError(
             f"--limit must be a positive integer (>= 1), got {n}"
+        )
+    return n
+
+
+def _positive_float(value: str) -> float:
+    """argparse type for --timeout: a positive, finite number of seconds.
+
+    Rejects 0, negatives, NaN, and infinity — a non-positive or non-finite
+    per-contract budget would either abandon every scan or never trip, which is
+    almost always a mistake; omen errors instead. A fractional value (e.g.
+    ``2.5``) is allowed, since a sub-second or fractional wall-clock budget is
+    sensible (unlike the integer-only --limit / --parallel counts).
+    """
+    import math
+
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"--timeout must be a positive number of seconds, got {value!r}"
+        )
+    if not math.isfinite(n) or n <= 0:
+        raise argparse.ArgumentTypeError(
+            f"--timeout must be a positive number of seconds (> 0), got {n}"
         )
     return n
 
@@ -361,6 +386,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "in --batch mode, give each contract at most SECONDS of wall-clock "
+            "analysis time (POST_V01 R2.14; default: no budget). A contract whose "
+            "scan overruns is abandoned and recorded as a per-item error (it "
+            "counts toward the exit-1 error tally and the --batch-summary error "
+            "count, with a message to stderr) so the batch makes progress past "
+            "it — one pathological contract (a hanging compiler, a runaway "
+            "symbolic path) can't stall a whole-program scan of dozens-to-"
+            "hundreds of contracts. Fractional seconds are allowed (e.g. 2.5). "
+            "Enforced on the same thread-pool seam as --parallel, so it composes "
+            "with it; output, the --fail-on gate, the error count, and the "
+            "summary all stay in deterministic input order. No effect in single "
+            "--contract mode."
+        ),
+    )
+    parser.add_argument(
         "--batch-summary",
         action="store_true",
         help=(
@@ -494,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_summary=args.batch_summary,
             severity_override=args.severity_override,
             parallel=args.parallel,
+            timeout=args.timeout,
         )
 
     # --- Single-contract mode ---

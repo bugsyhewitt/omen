@@ -186,6 +186,53 @@ def parse_parallel(parallel: int | str | None) -> int:
     return n
 
 
+def parse_timeout(timeout: float | int | str | None) -> float | None:
+    """Parse a ``--timeout`` value into a per-contract second budget (a float).
+
+    *timeout* is the wall-clock budget, in seconds, allowed for a single
+    contract's analysis in ``--batch`` mode (POST_V01 R2.14). ``None`` (the
+    flag's default sentinel) means "no budget" — the historical behaviour, a
+    scan runs until it finishes. A positive value caps each contract: a scan
+    that overruns is abandoned and recorded as a per-item error (the same
+    ``(None, error)`` shape an exception produces), so one pathological contract
+    can't stall a whole-program scan of dozens-to-hundreds of contracts.
+
+    Mirrors the ``--limit`` / ``--parallel`` validation convention but for a
+    float (a sub-second or fractional budget like ``2.5`` is sensible, unlike a
+    worker count). Accepts a ``float``/``int`` directly or a decimal string (so a
+    config-file value or a raw CLI string both work). ``0``, negatives, NaN, and
+    infinity are rejected because a zero/negative/non-finite budget is
+    meaningless and almost always a typo — omen errors loudly instead of silently
+    abandoning every scan or never timing out. ``bool`` is rejected (``True`` /
+    ``False`` are ints in Python but never a sensible budget).
+
+    Returns ``None`` for the no-budget case so callers can treat the result
+    uniformly as "the budget, or None".
+    """
+    import math
+
+    if timeout is None:
+        return None
+    if isinstance(timeout, bool):
+        raise ValueError(
+            f"--timeout must be a positive number of seconds, got {timeout!r}"
+        )
+    if isinstance(timeout, (int, float)):
+        n = float(timeout)
+    else:
+        try:
+            n = float(str(timeout))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"--timeout must be a positive number of seconds, got {timeout!r}"
+            )
+    if not math.isfinite(n) or n <= 0:
+        raise ValueError(
+            f"--timeout must be a positive number of seconds (> 0), got {n}"
+        )
+    return n
+
+
 def _is_ignored(item: str, patterns: list[str]) -> bool:
     """Return True if *item* matches any of the ignore *patterns*.
 
@@ -315,6 +362,7 @@ def run_batch(
     batch_summary: bool = False,
     severity_override: str | None = None,
     parallel: int | str | None = None,
+    timeout: float | int | str | None = None,
 ) -> int:
     """Run analysis on every item under *path* and emit JSONL to stdout.
 
@@ -383,10 +431,38 @@ def run_batch(
     sequential path is memory: a parallel run buffers the ordered results before
     emitting, rather than streaming line by line.
 
-    Returns 1 if any item raised an exception; otherwise 3 if the --fail-on gate
-    tripped on any item; otherwise 0.
+    *timeout* (POST_V01 R2.14) is the per-contract wall-clock budget, in seconds.
+    ``None`` (the default) means no budget — each scan runs to completion, the
+    historical behaviour. A positive value caps each contract's analysis: a scan
+    that overruns is abandoned and recorded as a per-item error (counted toward
+    the exit-1 error tally and the ``--batch-summary`` error count, with a
+    message to stderr), exactly like a scan that raised — so one pathological
+    contract (a compiler that hangs, a symbolic path that blows up) cannot stall
+    a whole-program scan of dozens-to-hundreds of contracts. The budget is
+    enforced on the existing thread-pool orchestration seam (``--parallel``): the
+    item runs in a worker future and the driver waits at most *timeout* seconds
+    for it via ``Future.result(timeout=...)``; on overrun the driver moves on.
+    Setting a timeout therefore always uses the pool (a single shared worker when
+    ``--parallel`` is 1), since the budget can only be enforced by waiting on a
+    future from the calling thread. It deliberately does **not** subprocess-wrap
+    or kill the in-process Slither analysis (that would change omen's defining
+    architecture and violate the Anti-Abstraction / Simplicity gates); the
+    abandoned scan's worker thread is left to finish and be reclaimed when the
+    pool shuts down, so the budget bounds the batch's *blocking* wait per item,
+    which is the bounty-workflow value: progress past a stuck contract. Note the
+    budget bounds the *wait*, not the scan: with the default single worker the
+    stuck scan still occupies the lone thread, so the items queued behind it also
+    exceed their wait and time out — the "make progress past it" guarantee needs
+    a free worker, i.e. pairing --timeout with --parallel >= 2. Order is
+    preserved exactly as for ``--parallel``: results (whether a report or a
+    timeout error) are folded into the run's state in input order. **No effect in
+    single --contract mode** (one target, nothing a per-item batch budget bounds).
+
+    Returns 1 if any item raised an exception or timed out; otherwise 3 if the
+    --fail-on gate tripped on any item; otherwise 0.
     """
     workers = parse_parallel(parallel)
+    budget = parse_timeout(timeout)
     any_error = False
     error_count = 0
     gate_tripped = False
@@ -439,24 +515,63 @@ def run_batch(
             severity_override=severity_override,
         )
 
-    if workers <= 1 or len(items) <= 1:
+    # A per-item --timeout (R2.14) can only be enforced by waiting on a future
+    # from the calling thread, so it forces the pool path even at parallel=1
+    # (a single shared worker). With no timeout and no concurrency we keep the
+    # historical sequential, streaming, low-memory path.
+    use_pool = (workers > 1 or budget is not None) and len(items) > 1
+
+    if not use_pool:
         # Sequential path: analyze and consume one at a time. This preserves the
         # historical streaming behaviour (a line printed as soon as it is ready)
         # and the low-memory profile when --batch-summary and --output-file are
         # both off. Also taken for a 0/1-item batch, where a pool would be pure
-        # overhead.
+        # overhead. When a 1-item batch carries a timeout, the single scan still
+        # gets the budget below via the pool path's len(items) > 1 short-circuit
+        # being false here — a lone scan has nothing to make progress *past*, so
+        # the budget is a no-op rather than a way to abandon the only target.
         for item in items:
             _consume(*_run_one(item))
-    else:
-        # Parallel path: submit every item to a bounded thread pool, then consume
-        # the results strictly in input order (executor.map preserves submission
-        # order), so the JSONL stream / gate / summary are identical to the
-        # sequential run — only faster. The wall-clock win comes from the
-        # solc/vyper compiler subprocess each scan shells out to, which releases
-        # the GIL while it runs.
+    elif budget is None:
+        # Parallel path (no timeout): submit every item to a bounded thread pool,
+        # then consume the results strictly in input order (executor.map
+        # preserves submission order), so the JSONL stream / gate / summary are
+        # identical to the sequential run — only faster. The wall-clock win comes
+        # from the solc/vyper compiler subprocess each scan shells out to, which
+        # releases the GIL while it runs.
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for report, error in pool.map(_run_one, items):
                 _consume(report, error)
+    else:
+        # Timeout path (R2.14): submit every item up front, then collect each
+        # future strictly in input order, waiting at most *budget* seconds for
+        # each. An overrun is folded in as a per-item error (same shape as a
+        # raised exception), so the gate/error-count/summary stay deterministic
+        # and in input order regardless of which scan finishes first. We do NOT
+        # kill the abandoned worker (that would mean subprocess-wrapping the
+        # in-process Slither analysis); it is left to finish and be reclaimed at
+        # pool shutdown, which we make non-blocking via cancel_futures so the
+        # batch returns promptly past a stuck contract.
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = [pool.submit(_run_one, item) for item in items]
+            for item, future in zip(items, futures):
+                try:
+                    report, error = future.result(timeout=budget)
+                except FutureTimeoutError:
+                    _consume(
+                        None,
+                        f"omen: batch timeout [{item}]: analysis exceeded "
+                        f"{budget:g}s budget",
+                    )
+                else:
+                    _consume(report, error)
+        finally:
+            # Don't block shutdown on any still-running (timed-out) worker; let
+            # the interpreter reclaim the daemonic pool thread on exit.
+            pool.shutdown(wait=False, cancel_futures=True)
 
     if output_file is not None:
         from .cli import write_output
