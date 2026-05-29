@@ -1,12 +1,21 @@
-"""Output format tests: text, JSON, H1-markdown, and SARIF."""
+"""Output format tests: text, JSON, H1-markdown, SARIF, gha, and junit."""
 
 from __future__ import annotations
 
 import json
+from xml.etree import ElementTree as ET
 
 from omen.analyzer import AnalysisReport
 from omen.findings import Evidence, Finding, Severity
-from omen.formats import render, to_gha, to_h1md, to_json, to_sarif, to_text
+from omen.formats import (
+    render,
+    to_gha,
+    to_h1md,
+    to_json,
+    to_junit,
+    to_sarif,
+    to_text,
+)
 
 
 def _report() -> AnalysisReport:
@@ -54,6 +63,7 @@ def test_render_dispatch():
     assert render(_report(), "sarif").startswith("{")
     assert render(_report(), "text").startswith("omen ")
     assert render(_report(), "gha").startswith("::")
+    assert render(_report(), "junit").lstrip().startswith("<?xml")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -452,3 +462,125 @@ def test_gha_empty_report_emits_a_single_notice():
 
 def test_gha_render_dispatch_matches_to_gha():
     assert render(_source_report(), "gha") == to_gha(_source_report())
+
+
+# --- junit format: JUnit XML test-results report (R3.6) --------------------
+
+
+def test_junit_is_well_formed_xml_with_testsuite():
+    xml = to_junit(_source_report())
+    assert xml.startswith("<?xml")
+    root = ET.fromstring(xml)  # parses => well-formed
+    assert root.tag == "testsuite"
+    assert root.get("name") == "omen"
+
+
+def test_junit_one_failing_testcase_per_finding():
+    # _source_report() has two findings (high + medium).
+    root = ET.fromstring(to_junit(_source_report()))
+    assert root.get("tests") == "2"
+    # every finding is a failure (omen only emits findings, never passes)
+    assert root.get("failures") == "2"
+    cases = root.findall("testcase")
+    assert len(cases) == 2
+    # each testcase carries exactly one <failure>
+    for case in cases:
+        assert len(case.findall("failure")) == 1
+
+
+def test_junit_testcases_are_in_report_order():
+    root = ET.fromstring(to_junit(_source_report()))
+    cases = root.findall("testcase")
+    # report order: access-control (high) then tx-origin (medium)
+    assert "access-control" in cases[0].get("name")
+    assert "tx-origin" in cases[1].get("name")
+
+
+def test_junit_classname_buckets_by_category():
+    root = ET.fromstring(to_junit(_source_report()))
+    classnames = {c.get("classname") for c in root.findall("testcase")}
+    assert classnames == {"omen.access-control", "omen.tx-origin"}
+
+
+def test_junit_failure_carries_severity_in_type_and_message():
+    root = ET.fromstring(to_junit(_source_report()))
+    ac = next(
+        c for c in root.findall("testcase") if "access-control" in c.get("name")
+    )
+    failure = ac.find("failure")
+    # severity is preserved verbatim in the failure type
+    assert failure.get("type") == "high"
+    # the failure message is the finding description's first line
+    assert failure.get("message") == "missing onlyOwner guard"
+    # the body header carries severity + detector for triage context
+    assert "severity: high" in failure.text
+    assert "slither:protected-vars" in failure.text
+
+
+def test_junit_testcase_name_carries_location():
+    root = ET.fromstring(to_junit(_source_report()))
+    ac = next(
+        c for c in root.findall("testcase") if "access-control" in c.get("name")
+    )
+    # source-mode finding pins to its source mapping
+    assert "Vuln.sol#12-18" in ac.get("name")
+
+
+def test_junit_bytecode_finding_uses_opcode_offset_location():
+    # The default _report() is a bytecode finding (opcode at offset 16 = 0x10).
+    root = ET.fromstring(to_junit(_report()))
+    case = root.find("testcase")
+    assert "@0x10" in case.get("name")
+
+
+def test_junit_empty_report_is_a_green_suite():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    root = ET.fromstring(to_junit(report))
+    assert root.get("failures") == "0"
+    # a single passing testcase records that omen ran (no <failure> child)
+    cases = root.findall("testcase")
+    assert len(cases) == 1
+    assert cases[0].find("failure") is None
+    assert "Clean.sol" in cases[0].get("name")
+
+
+def test_junit_escapes_special_xml_chars():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["reentrancy"],
+        findings=[
+            Finding(
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description='use <SafeMath> & "guards" not raw a < b',
+                detector="slither:reentrancy-eth",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["A&B.sol#1-2"]),
+            )
+        ],
+    )
+    xml = to_junit(report)
+    # raw angle brackets / ampersands from content must not appear unescaped
+    assert "<SafeMath>" not in xml
+    assert "A&B.sol" not in xml  # the bare ampersand is escaped to &amp;
+    # still parses as well-formed XML and round-trips the content
+    root = ET.fromstring(xml)
+    failure = root.find("testcase").find("failure")
+    assert '<SafeMath>' in failure.text
+    assert "A&B.sol#1-2" in root.find("testcase").get("name")
+
+
+def test_junit_render_dispatch_matches_to_junit():
+    assert render(_source_report(), "junit") == to_junit(_source_report())

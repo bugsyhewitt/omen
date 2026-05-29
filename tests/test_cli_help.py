@@ -47,6 +47,8 @@ def test_help_lists_format_choices():
     assert "text" in text
     # gha format (POST_V01 R3.5): GitHub Actions workflow-command annotations.
     assert "gha" in text
+    # junit format (POST_V01 R3.6): JUnit XML test-results report.
+    assert "junit" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -110,6 +112,44 @@ def test_gha_format_scan_runs_end_to_end():
     assert not out.lstrip().startswith("{")
     for line in out.splitlines():
         assert line.startswith("::"), f"non-command line in gha output: {line!r}"
+
+
+def test_junit_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format junit is exercisable in CI.
+    from pathlib import Path
+    from xml.etree import ElementTree as ET
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "junit",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # junit output is a well-formed JUnit XML testsuite, not JSON.
+    assert not out.lstrip().startswith("{")
+    assert out.lstrip().startswith("<?xml")
+    root = ET.fromstring(out)
+    assert root.tag == "testsuite"
+    assert root.get("name") == "omen"
+    # the suicidal bytecode finding becomes one failing testcase.
+    cases = root.findall("testcase")
+    assert len(cases) == 1
+    assert "suicidal" in cases[0].get("name")
+    assert cases[0].find("failure") is not None
 
 
 def test_cli_help_runs_as_subprocess():
