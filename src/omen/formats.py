@@ -203,25 +203,51 @@ _SEVERITY_TO_SCORE = {
     Severity.INFORMATIONAL: "0.0",
 }
 
+# The same score table keyed by the severity *string value* (e.g. "critical"),
+# for findings loaded from a saved report as dicts (--sarif-merge) where the
+# severity is already a string rather than a Severity enum member.
+_SEVERITY_TO_SCORE_BY_VALUE = {
+    sev.value: score for sev, score in _SEVERITY_TO_SCORE.items()
+}
+
 
 def _sarif_level(severity: Severity) -> str:
     return _SEVERITY_TO_SARIF_LEVEL.get(severity, "warning")
+
+
+# The level table keyed by the severity *string value* (e.g. "high"), for
+# findings loaded as dicts from a saved report (--sarif-merge), whose severity
+# is a plain string. Unknown / missing severities fall back to "warning",
+# matching the enum path.
+_SEVERITY_TO_LEVEL_BY_VALUE = {
+    sev.value: level for sev, level in _SEVERITY_TO_SARIF_LEVEL.items()
+}
+
+
+def _sarif_level_by_value(severity_value: str) -> str:
+    return _SEVERITY_TO_LEVEL_BY_VALUE.get(
+        (severity_value or "").strip().lower(), "warning"
+    )
 
 
 def _sarif_rule_id(category: str) -> str:
     return f"omen/{category}"
 
 
-def _result_locations(f: Finding) -> list[dict]:
-    """Build SARIF physicalLocation entries from a finding's source mappings.
+def _source_mapping_locations(source_mapping: list[str]) -> list[dict]:
+    """Build SARIF physicalLocation entries from omen source mappings.
 
     omen source mappings look like ``Contract.sol#12-18``. We split the file
     from the line range so GitHub/VSCode can annotate the exact lines. Bytecode
     findings carry no source location, so they emit no physicalLocation (their
     opcode offsets live in the result properties instead).
+
+    Operates on the raw list of mapping strings, so it serves both a live
+    ``Finding`` (via ``f.evidence.source_mapping``) and a finding dict loaded
+    from a saved report (via ``--sarif-merge``).
     """
     locations: list[dict] = []
-    for loc in f.evidence.source_mapping:
+    for loc in source_mapping:
         uri = loc
         region: dict | None = None
         if "#" in loc:
@@ -238,6 +264,66 @@ def _result_locations(f: Finding) -> list[dict]:
             physical["region"] = region
         locations.append({"physicalLocation": physical})
     return locations
+
+
+def _result_locations(f: Finding) -> list[dict]:
+    """SARIF physicalLocation entries for a live ``Finding`` (see helper above)."""
+    return _source_mapping_locations(list(f.evidence.source_mapping))
+
+
+def _sarif_rule(category: str, level: str, severity_value: str) -> dict:
+    """Build a SARIF reportingDescriptor (rule) for a category.
+
+    Shared by the live-report formatter and the ``--sarif-merge`` consolidator
+    so the rule shape is identical regardless of whether the finding came from a
+    fresh scan or a saved report. *level* is the SARIF level and *severity_value*
+    the omen severity string; both are derived from the finding's severity.
+    """
+    remediation = _REMEDIATION.get(category, "Review and remediate the issue.")
+    return {
+        "id": _sarif_rule_id(category),
+        "name": category.replace("-", ""),
+        "shortDescription": {"text": f"omen {category} finding"},
+        "fullDescription": {"text": remediation},
+        "help": {"text": remediation},
+        "defaultConfiguration": {"level": level},
+        "properties": {
+            "category": category,
+            "severity": severity_value,
+            "security-severity": _SEVERITY_TO_SCORE_BY_VALUE.get(
+                severity_value, "5.0"
+            ),
+            "tags": ["security", "smart-contract", category],
+        },
+    }
+
+
+def sarif_document(rules: list[dict], results: list[dict], *, indent: int = 2) -> str:
+    """Serialize a SARIF 2.1.0 log from prepared *rules* and *results*.
+
+    The single place that fixes omen's SARIF envelope (schema, version, the one
+    tool driver). Both ``to_sarif`` (live report) and the ``--sarif-merge``
+    consolidator hand it their assembled rule/result arrays so the document shape
+    is byte-for-byte consistent across the two entry points.
+    """
+    sarif_doc = {
+        "$schema": _SARIF_SCHEMA,
+        "version": _SARIF_VERSION,
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "omen",
+                        "version": __version__,
+                        "informationUri": _SARIF_INFO_URI,
+                        "rules": rules,
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+    return json.dumps(sarif_doc, indent=indent, sort_keys=False)
 
 
 def to_sarif(
@@ -271,25 +357,9 @@ def to_sarif(
     for f in report.findings:
         rule_id = _sarif_rule_id(f.category)
         if rule_id not in rules_by_id:
-            remediation = _REMEDIATION.get(
-                f.category, "Review and remediate the issue."
+            rules_by_id[rule_id] = _sarif_rule(
+                f.category, _sarif_level(f.severity), f.severity.value
             )
-            rules_by_id[rule_id] = {
-                "id": rule_id,
-                "name": f.category.replace("-", ""),
-                "shortDescription": {"text": f"omen {f.category} finding"},
-                "fullDescription": {"text": remediation},
-                "help": {"text": remediation},
-                "defaultConfiguration": {"level": _sarif_level(f.severity)},
-                "properties": {
-                    "category": f.category,
-                    "severity": f.severity.value,
-                    "security-severity": _SEVERITY_TO_SCORE.get(
-                        f.severity, "5.0"
-                    ),
-                    "tags": ["security", "smart-contract", f.category],
-                },
-            }
 
         result: dict = {
             "ruleId": rule_id,
@@ -321,24 +391,7 @@ def to_sarif(
             result["locations"] = locations
         results.append(result)
 
-    sarif_doc = {
-        "$schema": _SARIF_SCHEMA,
-        "version": _SARIF_VERSION,
-        "runs": [
-            {
-                "tool": {
-                    "driver": {
-                        "name": "omen",
-                        "version": __version__,
-                        "informationUri": _SARIF_INFO_URI,
-                        "rules": list(rules_by_id.values()),
-                    }
-                },
-                "results": results,
-            }
-        ],
-    }
-    return json.dumps(sarif_doc, indent=indent, sort_keys=False)
+    return sarif_document(list(rules_by_id.values()), results, indent=indent)
 
 
 def _severity_summary(findings: list[Finding]) -> str:
