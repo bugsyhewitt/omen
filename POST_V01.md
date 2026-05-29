@@ -764,14 +764,79 @@ land.
 
 ---
 
-> **Rotation 2 status (as of R17, 2026-05-29).** R2.1–R2.9 shipped. The Rotation 2
+### R2.10. `--config` TOML config-file defaults
+
+**Rank: 10 (Rotation 2) — zero-dependency config-file form of the now-many flags**
+
+> **STATUS: ✅ IMPLEMENTED (R18, 2026-05-29).** `--config PATH` loads a TOML file
+> whose keys set **default** values for the other flags, so a repo can commit one
+> `omen.toml` and shrink the now-dozen-flag CI invocation to `omen --config
+> omen.toml --contract X` (or drive everything — including `contract`/`input-type`
+> — from the file). The contract is deliberately small: a **flat name→value map**
+> at the top level *or* under an `[omen]` table (when an `[omen]` table is present
+> its keys are used, so `omen.toml` can also sit as a section in a shared config
+> without bleed-through); **no** nested sub-tables, profiles, or per-category
+> overrides — the Simplicity-Gate floor. Keys are flag names with the leading
+> `--` dropped, dashes and underscores interchangeable (`min-severity` /
+> `min_severity`), with `o` aliased to `output_file`. Settable keys: `contract`,
+> `batch`, `input-type`, `check`, `exclude-check`, `rpc-url`, `format`,
+> `min-confidence`, `min-severity`, `sort`, `limit`, `fail-on`, `output-file`.
+> Values are validated against the **same choices the CLI enforces** (choices for
+> the enum flags; positive-int for `limit`; `check`/`exclude-check` run through
+> the analyzer's `resolve_checks` on the merged value, exactly as a CLI value
+> would), so a typo is a file-named usage error (exit `2`), not a runtime crash.
+> **Precedence is explicit CLI flag > config-file value > built-in default**: the
+> file only fills slots the user did not pass on the command line, so any flag
+> stays overridable ad hoc. Implemented as a small `config.py` (`load_config`
+> reads/validates the TOML into a `{flag: value}` map; `ConfigError` carries a
+> human, file-named message) plus a `cli.py` merge step — `_explicitly_set_dests`
+> re-parses argv against a `SUPPRESS`-default clone of the parser to learn which
+> flags were actually typed, and `_apply_config` writes config values only into
+> the untyped slots before the existing single/batch dispatch runs unchanged.
+> Pure stdlib (`tomllib`, Python 3.11+; omen requires 3.13+) — **no dependency**,
+> runs offline / in CI / on a fresh checkout. Tests in `tests/test_config.py` (27
+> cases: loader — top-level vs `[omen]` table, dashed/underscore/`o`-alias key
+> normalisation, table-wins-over-toplevel, empty file, foreign-table ignore,
+> missing-file/invalid-TOML/unknown-key/bad-choice/non-positive-limit/bool-limit/
+> string-limit/non-string-choice errors; CLI surface — help lists it, default
+> `None`; `main()` — config supplies the gate / output-file / format / contract+
+> input-type, CLI flag overrides config, bad config value and missing file are
+> exit-2 usage errors, config `check` validated after merge; end-to-end subprocess
+> driving a real `omen.toml`). README gains a "Config files (`omen.toml`)" section
+> plus a usage-block and flag-list mention. No analysis-path, detector, format, or
+> dependency change.
+>
+> **Why (R18 research-lap reasoning):** R2.9 and the Rotation 2 status note both
+> flagged `--config` as "the leading remaining candidate." After R2.1–R2.9 the CLI
+> surface is ~a dozen flags; the cost of that expressiveness is invocation length
+> — every pipeline step repeats the same long one-liner. `--config` is the one
+> remaining axis that addresses *invocation ergonomics* rather than report content
+> or destination. The R17 lap deferred it as "the largest lift … risks the
+> Simplicity Gate (future-proofing)." That risk is real but avoidable: the lift is
+> bounded by keeping the contract a **flat one-flag-per-key map with CLI override**
+> — no profiles, no env-var layer, no nested overrides, no new file-discovery
+> magic (you pass the path explicitly; omen does not hunt for `.omenrc` up the
+> tree). That floor mirrors the existing flags one-for-one, reuses the existing
+> validation choices, and adds no dependency (`tomllib` is stdlib). The one piece
+> of real engineering is the precedence detection — distinguishing "user typed the
+> flag" from "argparse filled the default" via a `SUPPRESS`-default re-parse — so
+> the file never surprises someone overriding it on the command line. Remaining
+> candidates for a future lap: per-category severity overrides, `--timeout`
+> per-check execution isolation (needs Slither subprocess wrapping), `--quiet`.
+
+---
+
+> **Rotation 2 status (as of R18, 2026-05-29).** R2.1–R2.10 shipped. The Rotation 2
 > theme has been the triage/UX surface around the now-ten-class detector roster:
 > R2.1–R2.6 built the full *output* pipeline (list → filter → sort → cap → gate →
 > human-readable render), R2.7–R2.8 closed the *input* axis from both directions
 > — scope a scan *to* a comma-list of classes (`--check`) or *exclude* a comma-list
-> from it (`--exclude-check`) — and R2.9 closed the *destination* axis (`-o` /
+> from it (`--exclude-check`) — R2.9 closed the *destination* axis (`-o` /
 > `--output-file` writes the report to a file, atomically, in any format and in
-> batch mode). A fresh full threat-landscape re-scan + re-ranking is still owed
-> before Rotation 2 is declared complete; remaining un-ranked candidates noted
-> during the R17 lap include per-category severity overrides and a config-file
-> (`.omenrc`) form of the now-many CLI flags (the leading next candidate).
+> batch mode) — and R2.10 closed the *invocation-ergonomics* axis (`--config`
+> loads a TOML file of flag defaults so a committed `omen.toml` shrinks repeated
+> CI one-liners, CLI flags always overriding the file). A fresh full
+> threat-landscape re-scan + re-ranking is still owed before Rotation 2 is
+> declared complete; remaining un-ranked candidates noted during the R18 lap
+> include per-category severity overrides, `--timeout` per-check execution
+> isolation, and `--quiet`.
