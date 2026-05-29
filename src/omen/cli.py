@@ -2,7 +2,7 @@
 
     omen --contract <path-or-address> --input-type {sol,vyper,bytecode,address}
          --check {prodigal,suicidal,greedy,reentrancy,access-control,tx-origin,all}
-         [--rpc-url URL] [--format {json,h1md,sarif}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--sort {severity,none}] [--limit N]
@@ -116,9 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["json", "h1md", "sarif", "text"],
         help=(
-            "output format. For a scan: json (default), h1md, or sarif (a "
-            "SARIF 2.1.0 log for GitHub code scanning / VSCode / CI). For "
-            "--list-checks: text (default) or json."
+            "output format. For a scan: json (default), text (a compact "
+            "human-readable terminal summary), h1md, or sarif (a SARIF 2.1.0 "
+            "log for GitHub code scanning / VSCode / CI). For --list-checks: "
+            "text (default) or json."
         ),
     )
     parser.add_argument(

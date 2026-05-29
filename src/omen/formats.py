@@ -1,11 +1,15 @@
-"""Output formatting for omen: JSON, H1-flavored markdown, and SARIF.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, and SARIF.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
 remediation per finding. SARIF (Static Analysis Results Interchange Format)
 2.1.0 is the standard consumed by GitHub Advanced Security code scanning,
 VSCode, and most CI systems — emitting it lets omen findings flow into the
-same tooling ecosystem as Slither's own SARIF output.
+same tooling ecosystem as Slither's own SARIF output. The text format
+(POST_V01 Rotation 2, R2.6) is the compact human-readable terminal view: a
+per-severity count summary followed by one line per finding, worst-first — the
+"what did omen find, at a glance" read for an analyst running omen interactively
+rather than piping it into another tool.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import json
 
 from . import __version__
 from .analyzer import AnalysisReport
-from .findings import Finding, Severity
+from .findings import SEVERITY_ORDER, Finding, Severity, severity_rank
 
 
 def to_json(report: AnalysisReport, *, indent: int = 2) -> str:
@@ -303,7 +307,88 @@ def to_sarif(report: AnalysisReport, *, indent: int = 2) -> str:
     return json.dumps(sarif_doc, indent=indent, sort_keys=False)
 
 
+def _severity_summary(findings: list[Finding]) -> str:
+    """Build a worst-first per-severity count line, e.g. ``2 high, 1 medium``.
+
+    Only severities that actually occur are listed, ordered worst-first
+    (critical → informational) so the line reads the same direction as the
+    default ``--sort severity`` finding order. An empty finding list yields
+    ``"none"`` so the summary is never blank.
+    """
+    counts: dict[Severity, int] = {}
+    for f in findings:
+        counts[f.severity] = counts.get(f.severity, 0) + 1
+    # SEVERITY_ORDER is informational..critical (best-first); reverse it so the
+    # summary leads with the worst severity, matching the default sort order.
+    parts = [
+        f"{counts[sev]} {sev.value}"
+        for sev in reversed(SEVERITY_ORDER)
+        if counts.get(sev)
+    ]
+    return ", ".join(parts) if parts else "none"
+
+
+def _finding_line(index: int, f: Finding) -> str:
+    """One compact terminal line for a finding: index, severity, category, where.
+
+    Severity is upper-cased and width-padded (the longest severity word is
+    ``informational`` at 13 chars) so the category column lines up across rows,
+    keeping the worst-first list scannable. The location is the first source
+    mapping (source mode) or the first opcode offset (bytecode mode), so the
+    analyst sees *where* to look without reading the full JSON/markdown.
+    """
+    sev = f.severity.value.upper().ljust(13)
+    where = ""
+    if f.evidence.source_mapping:
+        where = f"  {f.evidence.source_mapping[0]}"
+    elif f.evidence.opcodes:
+        off = f.evidence.opcodes[0].get("offset", 0)
+        where = f"  @0x{off:x}"
+    elif f.contract:
+        where = f"  {f.contract}"
+    return f"{index:>2}. {sev} {f.category} [{f.confidence}]{where}"
+
+
+def to_text(report: AnalysisReport) -> str:
+    """Render the report as a compact human-readable terminal view.
+
+    POST_V01 Rotation 2, R2.6. This is the presentation complement to the
+    Rotation 2 triage pipeline (filter → sort → cap → gate): once the findings
+    that survive are ordered worst-first, an analyst running omen interactively
+    wants a glanceable summary, not a JSON blob or a HackerOne markdown report.
+    The output is a one-line header (origin + checks), a per-severity count
+    summary, and one line per finding in the report's existing order (worst-first
+    under the default ``--sort severity``). It honours the same ``--limit``
+    truncation accounting as the h1md format ("top N of M shown"), and never
+    re-orders or re-filters — it is a pure formatter over ``report.findings``.
+    """
+    lines: list[str] = []
+    lines.append(f"omen {report.version} — {report.origin}")
+    lines.append(f"input: {report.input_type}  checks: {', '.join(report.checks)}")
+
+    shown = len(report.findings)
+    total = report.total_findings if report.total_findings is not None else shown
+    summary = _severity_summary(report.findings)
+    if total > shown:
+        # --limit (R2.4) truncated the report; report the honest "top N of M".
+        lines.append(f"findings: {shown} of {total} (top {shown} shown; --limit)  [{summary}]")
+    else:
+        lines.append(f"findings: {shown}  [{summary}]")
+
+    if report.findings:
+        lines.append("")
+        for i, f in enumerate(report.findings, start=1):
+            lines.append(_finding_line(i, f))
+    else:
+        lines.append("")
+        lines.append("No findings for the requested checks.")
+
+    return "\n".join(lines)
+
+
 def render(report: AnalysisReport, fmt: str) -> str:
+    if fmt == "text":
+        return to_text(report)
     if fmt == "json":
         return to_json(report)
     if fmt == "h1md":
