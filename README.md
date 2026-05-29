@@ -114,6 +114,7 @@ omen [--config PATH] \
      [--sort {severity,none}] \
      [--limit N] \
      [--baseline PATH]                # suppress findings already in a known-good baseline \
+     [--sarif-baseline PATH]          # tag SARIF results new/unchanged vs a baseline (needs --format sarif) \
      [--fail-on {never,informational,low,medium,high,critical}] \
      [-o/--output-file PATH]
 
@@ -149,6 +150,7 @@ omen --list-checks [--format {text,json}]
 - `--sort` — order findings in the report. `severity` (default) lists them worst-first — highest severity, then highest confidence — so the high-impact leads appear at the top of every report; `none` preserves the raw detector order. Sorting runs *after* `--min-severity`/`--min-confidence`, so it never changes which findings appear, only their order. Applies in single-contract and `--batch` mode alike — see [Sorting findings](#sorting-findings).
 - `--limit` — cap the report to at most `N` findings (a positive integer). Default: no limit (keep all). Applied *after* `--sort`, so with the default worst-first ordering it keeps the `N` highest-impact leads — the "show me the top N" triage move on a large scan. The report records the pre-cap `total_findings` and a `truncated` flag so a consumer can tell "10 of 47 shown" from "10 of 10". In `--batch` mode the cap is per-contract — see [Limiting findings](#limiting-findings).
 - `--baseline` — suppress findings already present in `PATH`, a previously-saved omen JSON report (a single-contract report, or one line / the whole JSONL stream of a `--batch` run) used as a **known-good baseline**. Only findings *new* relative to the baseline appear in the report, count toward the totals, and trip the `--fail-on` gate. This is the "adopt omen on a legacy codebase" CI move: capture today's findings with `omen … -o baseline.json`, commit it, then run with `--baseline baseline.json --fail-on high` so the pipeline fails only on issues introduced *after* the baseline. A finding's identity for matching is its category + detector + contract + location, so a `--severity-override` re-stamp or a Slither wording change does not make a known finding look new. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`; a missing/unreadable/non-JSON baseline is a usage error (exit `2`). Default: suppress nothing. See [Suppressing known findings with a baseline](#suppressing-known-findings-with-a-baseline).
+- `--sarif-baseline` — annotate SARIF output with a per-result `baselineState` from a known-good baseline `PATH` (a previously-saved omen JSON report, like `--baseline`). Each SARIF result is tagged `baselineState: "unchanged"` if its finding fingerprint (category + detector + contract + location) is already in `PATH`, or `"new"` if it was introduced since. Unlike `--baseline`, which *drops* known findings from the report, `--sarif-baseline` **keeps every result** so GitHub Advanced Security folds the pre-existing (`unchanged`) alerts into its baseline view while surfacing the `new` ones — the SARIF-native, code-scanning way to suppress known noise. Requires `--format sarif` and single-`--contract` mode (`--batch` emits JSONL, not a SARIF document); can be set in `omen.toml`; a missing/unreadable/non-JSON baseline is a usage error (exit `2`). Default: no `baselineState`. See [SARIF-native suppression with a baseline](#sarif-native-suppression-with-a-baseline).
 - `--fail-on` — CI exit-code gate: exit non-zero (code `3`) when a finding reaches this severity (`informational`, `low`, `medium`, `high`, or `critical`). Default: `never` (always exit `0` on a clean run, the historical behaviour). Use e.g. `high` to fail a pipeline step when omen surfaces a high/critical lead. Evaluated *before* `--limit`, so a display cap can never hide a finding from the gate; applies in single-contract and `--batch` mode alike — see [Failing CI on findings](#failing-ci-on-findings).
 - `-o` / `--output-file` — write the report to `PATH` instead of stdout. Default: stdout (the historical behaviour). Composes with every `--format`: in single-contract mode the file gets the rendered `json`/`text`/`h1md`/`sarif` report; in `--batch` mode it gets the JSONL stream (one JSON object per contract). The write is **atomic** — content goes to a sibling `.tmp` and is renamed into place — so a crash mid-write never clobbers a previously good report with a truncated one. Parent directories are created as needed. The `--fail-on` exit code is unaffected: the gate trips the same whether the report went to a file or stdout. See [Writing the report to a file](#writing-the-report-to-a-file).
 - `--ignore` — in `--batch` mode, skip contract paths/addresses matching any of these comma-separated [glob](https://docs.python.org/3/library/fnmatch.html) patterns. A pattern matches the full path, any single path component, or — when it contains a `/` — any sub-path, so `--ignore node_modules,lib,test` drops vendored/third-party trees (e.g. an OpenZeppelin import tree) from a recursive directory scan or a list file without hand-pruning the input. Globs support `*`, `?`, and `[seq]`. Ignored items produce no output and no error. Default: ignore nothing. No effect in single `--contract` mode. See [Excluding paths from a batch scan](#excluding-paths-from-a-batch-scan).
@@ -803,6 +805,59 @@ To upload in a GitHub Actions workflow:
     sarif_file: omen.sarif
 ```
 
+### SARIF-native suppression with a baseline
+
+[`--baseline`](#suppressing-known-findings-with-a-baseline) *drops* known
+findings from the report entirely. GitHub code scanning has its own,
+SARIF-native way to do this: instead of removing a result, you tag it with a
+[`baselineState`](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html#_Toc34317648)
+of `new`, `unchanged`, or `absent`, and GitHub folds the `unchanged` ones into
+its pre-existing-alert view while surfacing the `new` ones. `--sarif-baseline`
+emits exactly that annotation, so omen findings suppress the same way every
+other code-scanning tool's do — natively, in the platform, without losing data.
+
+```bash
+# 1) Capture today's findings as a known-good baseline (once), as for --baseline.
+omen --contract MyContract.sol --input-type sol --check all -o omen-baseline.json
+git add omen-baseline.json && git commit -m "omen baseline"
+
+# 2) In CI, emit SARIF with each result tagged new/unchanged against the baseline.
+omen --contract MyContract.sol --input-type sol --check all \
+     --format sarif --sarif-baseline omen-baseline.json -o omen.sarif
+```
+
+Every result in `omen.sarif` now carries a `baselineState`:
+
+- `"unchanged"` — the finding's fingerprint is already in the baseline (a known,
+  pre-existing issue). It is still present in the SARIF document; GitHub marks it
+  as a pre-existing alert rather than a new one.
+- `"new"` — the finding is not in the baseline (introduced since). These are the
+  alerts a reviewer sees surfaced on the PR.
+
+The identity used for matching is the **same fingerprint `--baseline` and
+`--diff` use** — `category + detector + contract + location` — so a
+`--severity-override` re-stamp or a Slither wording change never flips a known
+finding from `unchanged` to `new`.
+
+`--sarif-baseline` differs from `--baseline` in two deliberate ways:
+
+- **It does not drop findings.** Every result stays in the SARIF output; the
+  suppression happens in GitHub, driven by `baselineState`. (`--baseline`
+  removes the finding before it is ever emitted.)
+- **It does not change the `--fail-on` gate.** Because nothing is dropped, a
+  baselined-`unchanged` high-severity finding still trips `--fail-on high`
+  (exit `3`). If you want the *omen* exit code to ignore known findings, use
+  `--baseline`; if you want the *platform* to fold them into its baseline view
+  while still emitting them, use `--sarif-baseline`. The two are complementary
+  and can be combined.
+
+It applies only to `--format sarif` in single-`--contract` mode (a `--batch` run
+emits JSONL, not a SARIF document, so there is no per-result `baselineState` to
+write) — using it otherwise is a usage error (exit `2`), as is a
+missing/unreadable/non-JSON baseline. Like every other flag, `sarif-baseline`
+can be set in `omen.toml`, so a committed `sarif-baseline = "omen-baseline.json"`
+makes the annotation the default for a code-scanning workflow.
+
 ### Failing CI on findings
 
 Uploading SARIF surfaces findings as annotations, but it does not *fail* a
@@ -1038,9 +1093,9 @@ The contract is deliberately small and predictable:
   are interchangeable (`min-severity` *or* `min_severity`). `o` is accepted as
   the short alias for `output-file`. Settable keys: `contract`, `batch`,
   `input-type`, `check`, `exclude-check`, `ignore`, `parallel`, `timeout`,
-  `batch-summary`, `baseline`, `rpc-url`, `format`, `min-confidence`,
-  `min-severity`, `severity-override`, `sort`, `limit`, `fail-on`,
-  `output-file`.
+  `batch-summary`, `baseline`, `sarif-baseline`, `rpc-url`, `format`,
+  `min-confidence`, `min-severity`, `severity-override`, `sort`, `limit`,
+  `fail-on`, `output-file`.
 - **Values are validated** against the same choices the CLI enforces, so a typo
   in the file is caught at load time with a clear, file-named error (exit `2`),
   not silently fed into the analyzer.

@@ -18,7 +18,13 @@ import json
 
 from . import __version__
 from .analyzer import AnalysisReport
-from .findings import SEVERITY_ORDER, Finding, Severity, severity_rank
+from .findings import (
+    SEVERITY_ORDER,
+    Finding,
+    Severity,
+    finding_fingerprint,
+    severity_rank,
+)
 
 
 def to_json(report: AnalysisReport, *, indent: int = 2) -> str:
@@ -234,12 +240,30 @@ def _result_locations(f: Finding) -> list[dict]:
     return locations
 
 
-def to_sarif(report: AnalysisReport, *, indent: int = 2) -> str:
+def to_sarif(
+    report: AnalysisReport,
+    *,
+    indent: int = 2,
+    baseline: "set[str] | None" = None,
+) -> str:
     """Render the report as a SARIF 2.1.0 log document.
 
     Produces a single run with one tool driver (omen) whose `rules` array
     holds one reportingDescriptor per distinct (category) that produced a
     finding, and a `results` array with one result per finding.
+
+    *baseline* (POST_V01 R3.3, ``--sarif-baseline``) is an optional set of
+    finding fingerprints — as produced by ``load_baseline_fingerprints`` from a
+    previously-saved omen JSON report. When supplied, every result gains a
+    SARIF-native ``baselineState`` field: ``"unchanged"`` for a finding whose
+    fingerprint is already in the baseline (a pre-existing, known issue) and
+    ``"new"`` for one that is not (introduced since the baseline). This is the
+    GitHub-code-scanning-native suppression lever: unlike ``--baseline`` (which
+    *drops* known findings from the report entirely), ``--sarif-baseline`` keeps
+    every result in the SARIF document and lets the consuming platform (GitHub
+    Advanced Security) fold the ``unchanged`` ones into its pre-existing-alert
+    view while surfacing the ``new`` ones. ``None`` (the default) omits
+    ``baselineState`` entirely, leaving the SARIF output byte-for-byte as before.
     """
     rules_by_id: dict[str, dict] = {}
     results: list[dict] = []
@@ -282,6 +306,16 @@ def to_sarif(report: AnalysisReport, *, indent: int = 2) -> str:
             result["properties"]["contract"] = f.contract
         if f.evidence.opcodes:
             result["properties"]["opcodes"] = f.evidence.opcodes
+        if baseline is not None:
+            # SARIF-native suppression (POST_V01 R3.3): mark each result as a
+            # pre-existing ("unchanged") or newly-introduced ("new") finding.
+            # GitHub code scanning reads baselineState to fold the unchanged
+            # ones into its pre-existing-alert view. The fingerprint is the same
+            # category+detector+contract+location identity --baseline uses, so a
+            # severity-override re-stamp or a wording drift never flips the state.
+            result["baselineState"] = (
+                "unchanged" if finding_fingerprint(f) in baseline else "new"
+            )
         locations = _result_locations(f)
         if locations:
             result["locations"] = locations
@@ -386,7 +420,19 @@ def to_text(report: AnalysisReport) -> str:
     return "\n".join(lines)
 
 
-def render(report: AnalysisReport, fmt: str) -> str:
+def render(
+    report: AnalysisReport,
+    fmt: str,
+    *,
+    sarif_baseline: "set[str] | None" = None,
+) -> str:
+    """Render *report* in format *fmt*.
+
+    *sarif_baseline* (POST_V01 R3.3) is only meaningful for ``fmt == "sarif"``:
+    a set of finding fingerprints that drives the per-result ``baselineState``
+    annotation (``--sarif-baseline``). It is ignored for the other formats —
+    ``baselineState`` is a SARIF concept with no analogue in text/json/h1md.
+    """
     if fmt == "text":
         return to_text(report)
     if fmt == "json":
@@ -394,5 +440,5 @@ def render(report: AnalysisReport, fmt: str) -> str:
     if fmt == "h1md":
         return to_h1md(report)
     if fmt == "sarif":
-        return to_sarif(report)
+        return to_sarif(report, baseline=sarif_baseline)
     raise ValueError(f"unknown output format: {fmt}")
