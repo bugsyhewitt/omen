@@ -9,6 +9,7 @@ from omen.analyzer import AnalysisReport
 from omen.findings import Evidence, Finding, Severity
 from omen.formats import (
     render,
+    to_azure_devops,
     to_bitbucket_code_insights,
     to_checkstyle,
     to_gha,
@@ -72,6 +73,7 @@ def test_render_dispatch():
     assert render(_report(), "sonarqube").startswith("{")
     assert render(_report(), "gitlab-sast").startswith("{")
     assert render(_report(), "bitbucket-code-insights").startswith("{")
+    assert render(_report(), "azure-devops").startswith("##vso[")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -1720,3 +1722,175 @@ def test_bitbucket_render_dispatch_matches_to_bitbucket_code_insights():
     assert render(_source_report(), "bitbucket-code-insights") == to_bitbucket_code_insights(
         _source_report()
     )
+
+
+# --- azure-devops format (POST_V01 R3.10) ---------------------------------
+
+
+def test_azdo_one_command_per_finding_in_report_order():
+    out = to_azure_devops(_source_report())
+    lines = out.splitlines()
+    assert len(lines) == 2
+    for line in lines:
+        assert line.startswith("##vso[task.logissue ")
+    # High access-control finding first (worst-first); medium tx-origin second.
+    assert "code=access-control" in lines[0]
+    assert "code=tx-origin" in lines[1]
+
+
+def test_azdo_severity_maps_to_two_levels():
+    # critical/high -> error; medium/low/informational -> warning.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["x"],
+        findings=[
+            Finding(
+                category="c",
+                severity=sev,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1"]),
+            )
+            for sev in (
+                Severity.CRITICAL,
+                Severity.HIGH,
+                Severity.MEDIUM,
+                Severity.LOW,
+                Severity.INFORMATIONAL,
+            )
+        ],
+    )
+    lines = to_azure_devops(report).splitlines()
+    assert "type=error" in lines[0]  # critical
+    assert "type=error" in lines[1]  # high
+    assert "type=warning" in lines[2]  # medium
+    assert "type=warning" in lines[3]  # low
+    assert "type=warning" in lines[4]  # informational
+
+
+def test_azdo_source_finding_carries_sourcepath_and_linenumber():
+    line = to_azure_devops(_source_report()).splitlines()[0]
+    assert "sourcepath=Vuln.sol" in line
+    assert "linenumber=12" in line
+
+
+def test_azdo_single_line_mapping_carries_that_line():
+    # tx-origin finding in _source_report uses Vuln.sol#25 (single line, no end).
+    line = to_azure_devops(_source_report()).splitlines()[1]
+    assert "sourcepath=Vuln.sol" in line
+    assert "linenumber=25" in line
+
+
+def test_azdo_bytecode_finding_has_no_source_anchor():
+    line = to_azure_devops(_report()).splitlines()[0]
+    assert line.startswith("##vso[task.logissue ")
+    assert "sourcepath=" not in line
+    assert "linenumber=" not in line
+    # The category code is still carried so the annotation is identifiable.
+    assert "code=suicidal" in line
+
+
+def test_azdo_message_preserves_h1_severity_and_confidence_verbatim():
+    # The message body (everything after the command-closing ``]``) carries
+    # the original H1 severity, category and confidence verbatim. The literal
+    # ``]`` characters in the ``[sev/cat/conf]`` summary tag are AzDO-escaped
+    # to ``%5D`` so they don't terminate the command early; the human-readable
+    # severity/category strings remain intact.
+    out = to_azure_devops(_source_report())
+    high_line, med_line = out.splitlines()
+    high_msg = high_line.split("]", 1)[1]
+    med_msg = med_line.split("]", 1)[1]
+    assert "[high/access-control/high%5D" in high_msg
+    assert "[medium/tx-origin/medium%5D" in med_msg
+    assert "missing onlyOwner guard" in high_msg
+    assert "tx.origin used for auth" in med_msg
+
+
+def test_azdo_escapes_special_chars_in_message_and_props():
+    # A finding whose description contains a ``;`` and a ``]`` and a ``%``
+    # plus a multi-line body; AzDO's logging-command parser would otherwise
+    # truncate the command at the first ``;`` or ``]``.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="path;with]chars.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.HIGH,
+                title="t",
+                description="a;b]c%d\nmore",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["path;with]chars.sol#7"]),
+            )
+        ],
+    )
+    line = to_azure_devops(report)
+    # No raw ``;`` may appear inside an escaped value (only between props).
+    # No raw ``]`` may appear before the command-closing bracket.
+    sourcepath_prop = [p for p in line.split("]", 1)[0].split(";") if p.startswith("sourcepath=")][0]
+    assert "%3B" in sourcepath_prop
+    assert "%5D" in sourcepath_prop
+    # Message body escapes too: ``;`` -> %3B, ``]`` -> %5D, LF -> %0A, ``%`` -> %AZP25.
+    msg = line.split("]", 1)[1]
+    assert "%3B" in msg
+    assert "%5D" in msg
+    assert "%0A" in msg
+    assert "%AZP25" in msg
+
+
+def test_azdo_empty_report_emits_a_single_debug_line():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[],
+    )
+    out = to_azure_devops(report)
+    assert out.startswith("##[debug]")
+    assert "found no findings" in out
+    assert "\n" not in out
+
+
+def test_azdo_render_dispatch_matches_to_azure_devops():
+    assert render(_source_report(), "azure-devops") == to_azure_devops(_source_report())
+
+
+def test_azdo_source_mapping_without_hash_emits_no_linenumber():
+    # A source mapping that omits the ``#line`` portion still carries the
+    # file path (sourcepath) but no linenumber — the annotation appears on
+    # the Files tab, just not pinned to a line.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol"]),
+            )
+        ],
+    )
+    line = to_azure_devops(report)
+    assert "sourcepath=V.sol" in line
+    assert "linenumber=" not in line

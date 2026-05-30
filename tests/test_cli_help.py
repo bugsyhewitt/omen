@@ -55,6 +55,8 @@ def test_help_lists_format_choices():
     assert "sonarqube" in text
     # gitlab-sast format (POST_V01 R3.9): GitLab SAST Report v15 JSON.
     assert "gitlab-sast" in text
+    # azure-devops format (POST_V01 R3.10): Azure DevOps pipeline annotations.
+    assert "azure-devops" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -281,6 +283,44 @@ def test_gitlab_sast_format_scan_runs_end_to_end():
     # Bytecode findings are skipped (no file), so the vulnerabilities list
     # is empty — the rest of the envelope still emits.
     assert data["vulnerabilities"] == []
+
+
+def test_azure_devops_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format azure-devops is exercisable
+    # in CI on a fresh checkout. Bytecode findings have no source mapping, so
+    # the command is emitted without sourcepath/linenumber but still appears
+    # in the pipeline log (a fail-open posture parallel to gha's bytecode
+    # behaviour).
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "azure-devops",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # azure-devops output is one logging command per line (or a single
+    # ##[debug] when there are no findings) — never JSON.
+    assert not out.lstrip().startswith("{")
+    for line in out.splitlines():
+        assert line.startswith("##vso[task.logissue ") or line.startswith("##[debug]"), (
+            f"non-command line in azure-devops output: {line!r}"
+        )
+    assert "code=suicidal" in out
 
 
 def test_cli_help_runs_as_subprocess():

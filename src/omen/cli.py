@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -328,6 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
             "sonarqube",
             "gitlab-sast",
             "bitbucket-code-insights",
+            "azure-devops",
         ],
         help=(
             "output format. For a scan: json (default), text (a compact "
@@ -364,7 +365,14 @@ def build_parser() -> argparse.ArgumentParser:
             "ingested directly via the Bitbucket Pipelines Code Insights "
             "REST API so omen findings appear inline on the PR diff in "
             "the Bitbucket UI with no Atlassian-side custom importer; "
-            "POST_V01 R3.9). For --list-checks: text (default) or json."
+            "POST_V01 R3.9), or azure-devops (Azure DevOps Pipelines "
+            "task.logissue logging-command annotations — "
+            "##vso[task.logissue type=error|warning;sourcepath=...;linenumber=...] "
+            "lines the pipeline agent reads off stdout and turns into inline "
+            "annotations on the build's Files tab and rows in the Errors / "
+            "Warnings panel, with no upload step, no Marketplace extension, "
+            "and no paid tier; POST_V01 R3.10). For --list-checks: text "
+            "(default) or json."
         ),
     )
     parser.add_argument(

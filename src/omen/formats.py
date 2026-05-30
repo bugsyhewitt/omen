@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -1495,6 +1495,136 @@ def to_bitbucket_code_insights(report: AnalysisReport, *, indent: int = 2) -> st
     return json.dumps(document, indent=indent, sort_keys=False)
 
 
+# Azure DevOps Pipelines (POST_V01 R3.10). Azure DevOps logging commands have
+# exactly two issue levels — ``error`` and ``warning`` — which is three short of
+# omen's five-level taxonomy. ``critical``/``high`` map to ``error`` (the red,
+# build-failing annotation that lights up the pipeline run summary and pins to
+# the offending source line on the *Files* tab); ``medium``/``low``/
+# ``informational`` collapse onto ``warning`` (yellow, non-failing). The
+# original H1 severity is preserved verbatim in the message body so the
+# projection is not lossy in the UI a reviewer reads, mirroring how the gha/
+# checkstyle formatters handle a coarser target severity vocabulary.
+_SEVERITY_TO_AZDO_LEVEL = {
+    Severity.CRITICAL: "error",
+    Severity.HIGH: "error",
+    Severity.MEDIUM: "warning",
+    Severity.LOW: "warning",
+    Severity.INFORMATIONAL: "warning",
+}
+
+
+def _azdo_escape(text: str) -> str:
+    """Escape a value embedded in an Azure DevOps logging command.
+
+    Per the Azure DevOps pipelines logging-command parser, a value carried inside
+    ``##vso[task.logissue ...]message`` must escape the property-list separator
+    (``;``), the command terminator (``]``), the escape introducer (``%``), and
+    line breaks (CR/LF) so a path/message containing them does not prematurely
+    close a property or split the command across log lines. The escape
+    convention is the same percent-encoded form Azure DevOps' own tasks emit:
+    ``%`` -> ``%AZP25`` (the documented escape for ``%`` itself), CR -> ``%0D``,
+    LF -> ``%0A``, ``;`` -> ``%3B``, ``]`` -> ``%5D``.
+    """
+    return (
+        text.replace("%", "%AZP25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(";", "%3B")
+        .replace("]", "%5D")
+    )
+
+
+def _azdo_location(f: Finding) -> tuple[str | None, int | None, int | None]:
+    """Extract (sourcepath, linenumber, columnnumber) for an AzDO annotation.
+
+    Reuses omen's ``Contract.sol#12-18`` source-mapping shape (same split as
+    the SARIF/gha helpers): the part before ``#`` is the file, the start of
+    the line range is the line. Azure DevOps' ``task.logissue`` carries a
+    single ``linenumber`` (not a range), so the end line is discarded. omen
+    has no column data, so ``columnnumber`` is always ``None``. A bytecode
+    finding (no source mapping) yields ``(None, None, None)`` and the
+    annotation is emitted without source-anchor properties.
+    """
+    if not f.evidence.source_mapping:
+        return (None, None, None)
+    loc = f.evidence.source_mapping[0]
+    if "#" not in loc:
+        return (loc, None, None)
+    uri, _, span = loc.partition("#")
+    start_s, _, _end_s = span.partition("-")
+    try:
+        start = int(start_s)
+    except ValueError:
+        return (uri, None, None)
+    return (uri, start, None)
+
+
+def _azdo_line(f: Finding) -> str:
+    """One Azure DevOps ``task.logissue`` logging command for a finding.
+
+    Shape: ``##vso[task.logissue type=LEVEL;sourcepath=PATH;linenumber=N;
+    code=CATEGORY]MESSAGE``. ``sourcepath`` and ``linenumber`` are omitted
+    when the finding has no source location (bytecode mode); the command still
+    renders in the pipeline log, it just isn't pinned to a file line. The
+    message preserves omen's original five-level severity and confidence
+    verbatim (``[severity/category/confidence] description``) so the
+    projection onto AzDO's two-level error/warning vocabulary is not lossy in
+    the rendered text a reviewer reads.
+    """
+    level = _SEVERITY_TO_AZDO_LEVEL.get(f.severity, "warning")
+    uri, line, _col = _azdo_location(f)
+    props: list[str] = [f"type={level}"]
+    if uri:
+        props.append(f"sourcepath={_azdo_escape(uri)}")
+        if line is not None:
+            props.append(f"linenumber={line}")
+    # ``code`` is the AzDO-native "rule id" property the *Files* tab uses to
+    # group annotations; omen's category is the natural fit (analogous to the
+    # SARIF ruleId / Checkstyle source attribute).
+    props.append(f"code={_azdo_escape(f.category)}")
+    summary = f"[{f.severity.value}/{f.category}"
+    if f.confidence:
+        summary += f"/{f.confidence}"
+    summary += "]"
+    body = f.description or f.title or ""
+    message = f"{summary} {body}".strip()
+    return f"##vso[task.logissue {';'.join(props)}]{_azdo_escape(message)}"
+
+
+def to_azure_devops(report: AnalysisReport) -> str:
+    """Render the report as Azure DevOps Pipelines logging-command annotations.
+
+    POST_V01 R3.10. One ``##vso[task.logissue ...]`` command per finding, in
+    the report's existing worst-first order. The Azure DevOps pipeline agent
+    reads these straight off the step's stdout/stderr and turns each into an
+    inline annotation on the **Files** tab of the build summary (pinned to
+    ``sourcepath``+``linenumber`` when available) and a row in the build's
+    **Errors / Warnings** panel — the no-upload, no-Marketplace-extension
+    parallel to the GitHub Actions ``gha`` formatter for the most common CI
+    integration outside the GitHub ecosystem.
+
+    Unlike ``--format sarif`` (a SARIF 2.1.0 log uploaded to GitHub Advanced
+    Security) and ``--format gitlab-sast`` (a JSON document ingested by the
+    GitLab Security Dashboard), ``--format azure-devops`` targets Azure
+    Pipelines' *own* native logging-command schema directly — so omen findings
+    appear as first-class build-summary errors/warnings on any Azure DevOps
+    pipeline (cloud or Server) with no upload step, no extension, and no
+    paid tier.
+
+    A pure formatter over ``report.findings`` (like ``to_text``/``to_gha``):
+    it never re-orders or re-filters. An empty report emits a single
+    ``##[debug]`` line so the step still leaves a visible "omen ran, found
+    nothing" trace in the pipeline log rather than silent empty output,
+    parallel to how the gha formatter degrades to a single ``::notice``.
+    """
+    if not report.findings:
+        return (
+            f"##[debug]omen {_azdo_escape(report.origin)}: "
+            f"{_azdo_escape('omen found no findings for the requested checks.')}"
+        )
+    return "\n".join(_azdo_line(f) for f in report.findings)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -1528,4 +1658,6 @@ def render(
         return to_gitlab_sast(report)
     if fmt == "bitbucket-code-insights":
         return to_bitbucket_code_insights(report)
+    if fmt == "azure-devops":
+        return to_azure_devops(report)
     raise ValueError(f"unknown output format: {fmt}")
