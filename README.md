@@ -108,6 +108,7 @@ omen [--config PATH] \
      [--exclude-check CATEGORY[,CATEGORY...]]   # inverse selector; not 'all' \
      [--rpc-url URL] \
      [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,gitlab-sast}] \
+     [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
      [--severity-override CATEGORY=SEVERITY[,...]]   # org-specific risk tuning \
@@ -148,6 +149,7 @@ omen --list-checks [--format {text,json}]
 - `--exclude-check` — remove one or more categories from the `--check` set (the inverse selector). Accepts a single category or a **comma-separated list** (not `all`). Pairs with the default `--check all` to express "every class except these" — e.g. `--exclude-check greedy,prodigal` to drop the two noisiest bytecode heuristics. Excluding a class `--check` did not select is a no-op; excluding *every* selected class is a usage error (exit `2`). Default: exclude nothing. Applies in single-contract and `--batch` mode alike. See [Excluding classes from a scan](#excluding-classes-from-a-scan).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
 - `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)), `sonarqube` (SonarQube's [Generic Issue Import Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/) JSON — one issue per finding with SonarQube-native `BLOCKER`/`CRITICAL`/`MAJOR`/`MINOR`/`INFO` severity and a `VULNERABILITY` type, ingested directly via `sonar.externalIssuesReportPaths` so omen findings appear as first-class external issues in the SonarQube/SonarCloud UI; see [SonarQube generic issue output](#sonarqube-generic-issue-output)), or `gitlab-sast` (GitLab's native [SAST Report v15](https://gitlab.com/gitlab-org/security-products/security-report-schemas) JSON — one vulnerability per finding with GitLab-native `Critical`/`High`/`Medium`/`Low`/`Info` severity and a `sast` category, uploaded as the `reports:sast` job artifact so omen findings appear as first-class vulnerabilities in GitLab's **Security Dashboard**, the MR **Vulnerability Report**, and any severity-based merge-request approval rule; see [GitLab SAST output](#gitlab-sast-output)).
+- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)), `sonarqube` (SonarQube's [Generic Issue Import Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/) JSON — one issue per finding with SonarQube-native `BLOCKER`/`CRITICAL`/`MAJOR`/`MINOR`/`INFO` severity and a `VULNERABILITY` type, ingested directly via `sonar.externalIssuesReportPaths` so omen findings appear as first-class external issues in the SonarQube/SonarCloud UI; see [SonarQube generic issue output](#sonarqube-generic-issue-output)), or `bitbucket-code-insights` (Bitbucket Cloud's native [Code Insights](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/) JSON — one `report` block plus one annotation per finding with `CRITICAL`/`HIGH`/`MEDIUM`/`LOW` severity and a `VULNERABILITY` type, ingested directly via the Bitbucket Pipelines Code Insights REST API so omen findings render inline on the PR diff in the Bitbucket UI with no Atlassian-side custom importer; see [Bitbucket Code Insights output](#bitbucket-code-insights-output)).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
@@ -1141,6 +1143,119 @@ cannot be represented and is skipped — prefer `--format json` or `sarif` for
 full coverage of a bytecode scan. Like the other scan formats, `gitlab-sast`
 applies to single-`--contract` mode; a `--batch` run always emits its JSONL
 stream.
+### Bitbucket Code Insights output
+
+`--format sarif` (above) targets GitHub Advanced Security; `--format checkstyle`
+reaches GitLab CI's Code Quality widget; `--format sonarqube` lands in
+SonarQube. The Bitbucket Cloud equivalent — the native review-side schema that
+renders inline annotations on a Bitbucket PR diff — is the
+[Code Insights](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/)
+REST API. `--format bitbucket-code-insights` emits exactly that: a single JSON
+document with a top-level `report` block (title, details, result, type,
+reporter, per-severity counts) and an `annotations` array (one annotation per
+finding, file/line-anchored, with the Bitbucket-native `CRITICAL`/`HIGH`/
+`MEDIUM`/`LOW` severity and a `VULNERABILITY` annotation type). Bitbucket
+Pipelines ingests the document directly — no Atlassian-side custom importer —
+and Bitbucket lights up each annotation inline on the PR-diff in its UI.
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format bitbucket-code-insights > omen-bitbucket.json
+```
+
+```json
+{
+  "report": {
+    "title": "omen security scan",
+    "details": "omen 0.1.0 scanned MyContract.sol (sol); 2 findings [critical=1, high=1]",
+    "report_type": "SECURITY",
+    "reporter": "omen",
+    "result": "FAILED",
+    "data": [
+      {"title": "informational", "type": "NUMBER", "value": 0},
+      {"title": "low", "type": "NUMBER", "value": 0},
+      {"title": "medium", "type": "NUMBER", "value": 0},
+      {"title": "high", "type": "NUMBER", "value": 1},
+      {"title": "critical", "type": "NUMBER", "value": 1}
+    ]
+  },
+  "annotations": [
+    {
+      "external_id": "omen-reentrancy|slither:reentrancy-eth|MyContract|MyContract.sol#42-47",
+      "annotation_type": "VULNERABILITY",
+      "summary": "[critical/reentrancy/high] external call before state update",
+      "severity": "CRITICAL",
+      "path": "MyContract.sol",
+      "line": 42
+    },
+    {
+      "external_id": "omen-tx-origin|slither:tx-origin|MyContract|MyContract.sol#12",
+      "annotation_type": "VULNERABILITY",
+      "summary": "[high/tx-origin/high] tx.origin used for authorization",
+      "severity": "HIGH",
+      "path": "MyContract.sol",
+      "line": 12
+    }
+  ]
+}
+```
+
+omen's five-level severity (`critical`/`high`/`medium`/`low`/`informational`)
+projects onto Bitbucket's four-level annotation vocabulary
+(`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`) the natural way: `critical` → `CRITICAL`,
+`high` → `HIGH`, `medium` → `MEDIUM`, `low` → `LOW`, and `informational` folds
+into `LOW` (the same "you should know, but it's not a bug" bucket). The
+original H1 severity is preserved verbatim in the annotation's `summary` line
+(`[severity/category/confidence] description`), so the projection is not
+actively lossy in the UI a reviewer reads — Bitbucket's four-level filter
+exposes the projected level, but the verbatim H1 severity stays one click away.
+
+The annotation's `external_id` is the finding's stable fingerprint
+(`omen-<category>|<detector>|<contract>|<location>`), so re-running omen on
+the same code **upserts** the same annotation via the Code Insights API rather
+than duplicating it — the same fingerprint identity `--baseline`, `--diff`,
+and `--sarif-baseline` use elsewhere in omen.
+
+In a Bitbucket Pipelines workflow, run omen, then POST the report to the
+Code Insights API:
+
+```yaml
+# bitbucket-pipelines.yml
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          name: omen scan
+          script:
+            - omen --contract MyContract.sol --input-type sol --check all \
+                --format bitbucket-code-insights -o omen-bitbucket.json
+            - |
+              REPORT_ID="omen-$BITBUCKET_COMMIT"
+              JQ_REPORT=$(jq '.report' omen-bitbucket.json)
+              JQ_ANNS=$(jq '.annotations' omen-bitbucket.json)
+              # PUT the report header
+              curl -sf -X PUT \
+                -H "Content-Type: application/json" \
+                -u "$BITBUCKET_USER:$BITBUCKET_APP_PASSWORD" \
+                "https://api.bitbucket.org/2.0/repositories/$BITBUCKET_REPO_FULL_NAME/commit/$BITBUCKET_COMMIT/reports/$REPORT_ID" \
+                -d "$JQ_REPORT"
+              # POST the annotations (bulk)
+              curl -sf -X POST \
+                -H "Content-Type: application/json" \
+                -u "$BITBUCKET_USER:$BITBUCKET_APP_PASSWORD" \
+                "https://api.bitbucket.org/2.0/repositories/$BITBUCKET_REPO_FULL_NAME/commit/$BITBUCKET_COMMIT/reports/$REPORT_ID/annotations" \
+                -d "$JQ_ANNS"
+```
+
+A clean scan (no findings) emits a well-formed document with
+`report.result: "PASSED"` and an empty `annotations` array, so the Bitbucket UI
+shows a green report row rather than no report at all. A bytecode-mode finding
+(no source mapping) and a source finding whose mapping lacks a line number
+cannot be anchored to a PR-diff line; rather than dropping them, the
+formatter emits them as report-level annotations (no `path`/`line`) so they
+still appear in the Code Insights tab — the same fail-open posture the `gha`
+formatter takes for the analogous case. Like the other scan formats,
+`bitbucket-code-insights` applies to single-`--contract` mode; a `--batch`
+run always emits its JSONL stream.
 
 ### SARIF-native suppression with a baseline
 

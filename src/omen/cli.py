@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -317,7 +317,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         default=None,
-        choices=["json", "h1md", "sarif", "text", "gha", "junit", "checkstyle", "sonarqube", "gitlab-sast"],
+        choices=[
+            "json",
+            "h1md",
+            "sarif",
+            "text",
+            "gha",
+            "junit",
+            "checkstyle",
+            "sonarqube",
+            "gitlab-sast",
+            "bitbucket-code-insights",
+        ],
         help=(
             "output format. For a scan: json (default), text (a compact "
             "human-readable terminal summary), h1md, sarif (a SARIF 2.1.0 "
@@ -346,6 +357,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Security Dashboard, the MR Vulnerability Report, and any "
             "severity-based merge-request approval rule; POST_V01 R3.9). "
             "For --list-checks: text (default) or json."
+            "POST_V01 R3.8), "
+            "or bitbucket-code-insights (Bitbucket Cloud's native Code "
+            "Insights JSON — one report + one annotation per finding with "
+            "CRITICAL/HIGH/MEDIUM/LOW severity and VULNERABILITY type, "
+            "ingested directly via the Bitbucket Pipelines Code Insights "
+            "REST API so omen findings appear inline on the PR diff in "
+            "the Bitbucket UI with no Atlassian-side custom importer; "
+            "POST_V01 R3.9). For --list-checks: text (default) or json."
         ),
     )
     parser.add_argument(
