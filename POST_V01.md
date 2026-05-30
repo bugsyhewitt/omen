@@ -1762,3 +1762,126 @@ land.
 > example and a Reviewdog pipeline example) plus usage-block and flag-list
 > mentions.
 
+### R3.9. `--format gitlab-sast` GitLab SAST Report v15 JSON
+
+**Rank: 1 (Rotation 32) — the GitLab-security complement to the GitLab-Code-Quality fallback**
+
+> **STATUS: ✅ IMPLEMENTED (R32, 2026-05-29).** `omen … --format gitlab-sast`
+> renders a scan as GitLab's native [SAST Report v15](https://gitlab.com/gitlab-org/security-products/security-report-schemas)
+> JSON document — one `{"version": ..., "scan": ..., "vulnerabilities": [...]}`
+> object with one vulnerability per finding — the schema GitLab CE/EE ingests
+> directly when uploaded as the `reports:sast` job artifact. Each vulnerability
+> carries GitLab's native `Critical`/`High`/`Medium`/`Low`/`Info` severity (the
+> natural worst-first one-to-one mapping from omen's five-level taxonomy), a
+> `sast` category, a stable per-finding `id` (the omen finding fingerprint —
+> the same identity `--baseline`/`--diff`/`--sarif-baseline` use — so GitLab's
+> vulnerability lifecycle tracking sees the same finding across runs), a
+> `scanner` block identifying omen, `identifiers` carrying the omen category
+> and the underlying Slither detector (for GitLab's deduplication and
+> cross-tool correlation), and a `location` with `file` + optional
+> `start_line`/`end_line` (1-based, parsed from omen's `Contract.sol#start-end`
+> mapping — the same shape SARIF/sonarqube/checkstyle consume). omen findings
+> appear as **first-class vulnerabilities in GitLab's Security Dashboard, the
+> MR Vulnerability Report, and any severity-based merge-request approval
+> rule** — the GitLab-security audience, free on every GitLab tier, with no
+> upload step beyond the standard CI artifact.
+>
+> **Why (R32 reasoning).** The rotation goal named `--format gitlab-sast` vs
+> `--format github-sarif-annotated` as the next CI-integration output format,
+> to verify which (if either) was already shipped before implementing. A grep
+> confirmed **neither** appears in source, tests, README, or POST_V01 — both
+> are unshipped. Between the two, **gitlab-sast wins decisively** on audience
+> reach and architectural fit:
+> - `--format sarif` (R6) is already SARIF; the GitHub annotation surface is
+>   already covered by `--format gha` (R28); a `github-sarif-annotated` would
+>   be an overlap with at most a marginal "SARIF + GitHub-style annotations"
+>   shape that the existing pair already covers between them (GitHub
+>   Advanced Security takes SARIF and annotates from it natively). It is the
+>   weakest unshipped candidate — adjacent to two already-shipped formats.
+> - `--format gitlab-sast`, by contrast, opens a *new* GitLab audience the
+>   existing five CI-integration formats (sarif/gha/junit/checkstyle/sonarqube)
+>   do not cover at all. `--format checkstyle` already reaches GitLab via the
+>   **Code Quality** widget (a *diff-side review-comment* surface for
+>   reviewers), but GitLab's **Security** surface — the Vulnerability Report,
+>   the security dashboard, severity-based MR approval gates that block a
+>   merge on a new `High`/`Critical` lead — has no native ingestion path for
+>   any of omen's current formats. GitLab's SAST Report v15 is the schema
+>   that surface ingests; nothing else does. Two different GitLab UIs with
+>   no overlap.
+>
+> The R3.x CI-integration arc now reads: `--format sarif` (GitHub Advanced
+> Security, paid, upload) → `--format gha` (GitHub Actions only, free, no
+> upload, annotations) → `--format junit` (every CI's tests tab, free, no
+> upload, also covers TeamCity) → `--format checkstyle` (GitLab Code Quality
+> / Reviewdog / SonarQube / Jenkins code-review side, free, no upload) →
+> `--format sonarqube` (SonarQube/SonarCloud native external-issues path,
+> free, no upload) → `--format gitlab-sast` (GitLab's native security
+> surface — Vulnerability Report, Security Dashboard, MR approval gates,
+> free, no upload). The six together cover the GitHub paid path, the GitHub
+> free path, the platform-agnostic tests-tab path, the platform-agnostic
+> code-review-diff path, the SonarQube-native security-dashboard path, and
+> the GitLab-native security-dashboard path with no audience overlap.
+>
+> **Surface.** A pure formatter in `formats.py` (`to_gitlab_sast`), riding
+> the exact `render(report, fmt)` seam every other formatter uses — it never
+> re-orders or re-filters, just projects the already-triaged
+> `report.findings`. Severities map via `_SEVERITY_TO_GITLAB_SAST`, the
+> per-vulnerability identifiers via `_gitlab_sast_identifiers` (one
+> `omen_category` identifier plus one `omen_detector` identifier when the
+> detector is non-empty; a finding with an empty detector emits only the
+> category identifier so the list is never empty — GitLab's schema requires
+> at least one identifier), the location via `_gitlab_sast_location` which
+> reuses omen's `Contract.sol#start-end` mapping split, and the per-finding
+> `id` via `_gitlab_sast_vulnerability_id` which delegates to the existing
+> `finding_fingerprint` primitive so the same finding gets the same id
+> across runs (the identity GitLab's vulnerability lifecycle tracking
+> relies on). **Determinism / byte-stability:** the GitLab SAST schema
+> requires `scan.start_time`/`scan.end_time`, but omen has no other clock
+> dependency anywhere in its formatter surface and a varying timestamp
+> would make every report differ run-to-run (defeating reproducibility for
+> tests, diffs, and `--baseline` workflows). The formatter therefore emits
+> a deterministic epoch sentinel (`1970-01-01T00:00:00`); real pipeline
+> timing belongs to the GitLab runner, which already stamps the job, and
+> the SAST report is a content artifact, not a timing record. **Honest
+> projection note:** unlike SARIF/checkstyle/gha which have a "preserve
+> the original severity verbatim in an extra attribute" slot, the GitLab
+> SAST generic schema does not have an omen-private bag — the projected
+> severity is what consumers see. The natural-order severity mapping makes
+> this lossless in *practice* (every omen severity has its own GitLab
+> level). **Bytecode-mode findings carry no `file` and the schema strictly
+> requires it**, so they are *skipped* rather than emitted as
+> GitLab-invalid vulnerabilities; a report containing only bytecode
+> findings emits the well-formed empty-vulnerabilities envelope (the scan
+> block still valid), the same shape a clean scan produces. The honest
+> "this format cannot represent that finding" failure mode, parallel to
+> how `to_sonarqube` skips bytecode findings; the caller can prefer
+> `--format json`/`sarif` for full bytecode coverage. The CLI adds
+> `gitlab-sast` to `--format`'s choices; like
+> `h1md`/`sarif`/`gha`/`junit`/`checkstyle`/`sonarqube` it is a
+> single-`--contract` scan format (a `--batch` run always emits JSONL
+> regardless of `--format`, the existing behaviour, so `gitlab-sast`
+> needs no batch wiring). Pure stdlib (`json`); no dependency, no
+> detector/analysis-path change. Tests in `tests/test_formats.py` (19
+> new cases): valid JSON with the three required top-level keys,
+> schema version pinned to v15, scan block carries all six required
+> fields (analyzer / scanner / type:sast / start_time / end_time /
+> status:success), deterministic epoch timestamps with byte-stable output
+> across two calls, one vulnerability per finding in report order, full
+> severity-mapping table across omen's five levels (critical→Critical,
+> high→High, medium→Medium, low→Low, informational→Info), category always
+> `sast`, scanner short-block on each vulnerability, identifiers carry
+> both category and detector entries, identifiers fall back to category
+> only when detector empty, location carries file+start_line+end_line,
+> single-line mapping has no end_line, bytecode finding is skipped,
+> mixed source+bytecode skips only bytecode, empty report → empty
+> vulnerabilities, vulnerability id stable across runs and equals
+> `finding_fingerprint`, name/message from title and description from
+> description, description falls back to title when empty, and render
+> dispatch; plus a `--format gitlab-sast` end-to-end subprocess scan and
+> the `--help` choice list in `tests/test_cli_help.py`. README gains a
+> "GitLab SAST output" section (contrasting the GitLab-security path
+> with the GitLab-Code-Quality fallback the existing `--format
+> checkstyle` provides, with a complete `reports:sast` GitLab CI job
+> example and a scan-result-policy MR approval gate note) plus
+> usage-block and flag-list mentions.
+

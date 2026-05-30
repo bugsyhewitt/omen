@@ -107,7 +107,7 @@ omen [--config PATH] \
      --check CATEGORY[,CATEGORY...]   # a category, 'all', or a comma-separated list \
      [--exclude-check CATEGORY[,CATEGORY...]]   # inverse selector; not 'all' \
      [--rpc-url URL] \
-     [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube}] \
+     [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,gitlab-sast}] \
      [--min-confidence {low,medium,high}] \
      [--min-severity {informational,low,medium,high,critical}] \
      [--severity-override CATEGORY=SEVERITY[,...]]   # org-specific risk tuning \
@@ -147,7 +147,7 @@ omen --list-checks [--format {text,json}]
 - `--check` — which class(es) to scan for. Accepts a single category, `all` (runs every class), or a **comma-separated list** of categories (e.g. `access-control,delegatecall,upgrade` to scope a scan to the proxy/admin attack cluster). Valid categories: `prodigal`, `suicidal`, `greedy`, `reentrancy`, `access-control`, `tx-origin`, `delegatecall`, `upgrade`, `overflow`, `weak-randomness`. `all` must be used alone. Default: `all`. See [Scoping a scan to specific classes](#scoping-a-scan-to-specific-classes).
 - `--exclude-check` — remove one or more categories from the `--check` set (the inverse selector). Accepts a single category or a **comma-separated list** (not `all`). Pairs with the default `--check all` to express "every class except these" — e.g. `--exclude-check greedy,prodigal` to drop the two noisiest bytecode heuristics. Excluding a class `--check` did not select is a no-op; excluding *every* selected class is a usage error (exit `2`). Default: exclude nothing. Applies in single-contract and `--batch` mode alike. See [Excluding classes from a scan](#excluding-classes-from-a-scan).
 - `--rpc-url` — JSON-RPC endpoint; **required** for `--input-type address`. Used read-only.
-- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)), or `sonarqube` (SonarQube's [Generic Issue Import Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/) JSON — one issue per finding with SonarQube-native `BLOCKER`/`CRITICAL`/`MAJOR`/`MINOR`/`INFO` severity and a `VULNERABILITY` type, ingested directly via `sonar.externalIssuesReportPaths` so omen findings appear as first-class external issues in the SonarQube/SonarCloud UI; see [SonarQube generic issue output](#sonarqube-generic-issue-output)).
+- `--format` — `json` (machine-readable, default), `text` (a compact human-readable terminal summary — a per-severity count line plus one line per finding, worst-first; see [Text output](#text-output)), `h1md` (a HackerOne-style markdown report), `sarif` (a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) log for GitHub code scanning, VSCode, and CI ingestion), `gha` (GitHub Actions [workflow-command](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions) annotations — `::error`/`::warning`/`::notice` lines the Actions runner turns into inline PR-diff annotations on **every** repo for free, with no Advanced-Security upload; see [GitHub Actions annotations](#github-actions-annotations)), `junit` (a [JUnit XML](https://github.com/testmoapp/junitxml) test-results report — one failing `<testcase>` per finding under a single `<testsuite>`, the platform-agnostic format ingested natively by GitHub Actions test reporters, GitLab CI, Jenkins, CircleCI, Azure DevOps, and TeamCity so omen findings land in the CI **tests** tab and fail the build on essentially any CI; see [JUnit XML output](#junit-xml-output)), `checkstyle` (a [Checkstyle XML](https://checkstyle.sourceforge.io/) document — one `<error>` per finding grouped under `<file>` elements, the static-analysis lingua franca ingested natively by GitLab CI's **Code Quality** widget, Reviewdog, SonarQube, and the Jenkins Checkstyle plugin so findings surface as **code-review annotations** in the MR/PR diff; see [Checkstyle XML output](#checkstyle-xml-output)), `sonarqube` (SonarQube's [Generic Issue Import Format](https://docs.sonarqube.org/latest/analyzing-source-code/importing-external-issues/generic-issue-import-format/) JSON — one issue per finding with SonarQube-native `BLOCKER`/`CRITICAL`/`MAJOR`/`MINOR`/`INFO` severity and a `VULNERABILITY` type, ingested directly via `sonar.externalIssuesReportPaths` so omen findings appear as first-class external issues in the SonarQube/SonarCloud UI; see [SonarQube generic issue output](#sonarqube-generic-issue-output)), or `gitlab-sast` (GitLab's native [SAST Report v15](https://gitlab.com/gitlab-org/security-products/security-report-schemas) JSON — one vulnerability per finding with GitLab-native `Critical`/`High`/`Medium`/`Low`/`Info` severity and a `sast` category, uploaded as the `reports:sast` job artifact so omen findings appear as first-class vulnerabilities in GitLab's **Security Dashboard**, the MR **Vulnerability Report**, and any severity-based merge-request approval rule; see [GitLab SAST output](#gitlab-sast-output)).
 - `--min-confidence` — suppress findings below this confidence level (`low`, `medium`, or `high`). Default: `low` (keep everything). Use `medium` or `high` to filter out the low-confidence bytecode/address heuristics when triaging large scans. Applies in single-contract and `--batch` mode alike.
 - `--min-severity` — suppress findings below this severity level (`informational`, `low`, `medium`, `high`, or `critical`). Default: `informational` (keep everything). Use `high` or `critical` to surface only the high-impact leads first when triaging a whole program scope. Composes with `--min-confidence` (a finding must pass both) and applies in single-contract and `--batch` mode alike.
 - `--severity-override` — **org-specific risk tuning**: pin the severity omen reports for one or more detection classes to your own risk model, overriding the built-in defaults (and, in source mode, Slither's per-finding impact). A comma-separated list of `CATEGORY=SEVERITY` pairs, e.g. `--severity-override reentrancy=critical,tx-origin=high`. `SEVERITY` is one of `informational`/`low`/`medium`/`high`/`critical`. The override is applied *before* `--min-severity`, `--sort`, `--limit`, and `--fail-on`, so a pinned class surfaces and gates at the configured level (and a class pinned *down* can be filtered out as noise). Only the severity changes — the finding's category, confidence, evidence, and detector id are preserved, so it stays fully traceable. Applies in single-contract and `--batch` mode alike, and can be set in `omen.toml`. Default: override nothing. See [Overriding severity per class](#overriding-severity-per-class).
@@ -1051,6 +1051,96 @@ every issue, so a bytecode-mode finding (no source mapping) cannot be
 represented and is skipped — prefer `--format json` or `sarif` for full
 coverage of a bytecode scan. Like the other scan formats, `sonarqube` applies
 to single-`--contract` mode; a `--batch` run always emits its JSONL stream.
+
+### GitLab SAST output
+
+`--format checkstyle` reaches GitLab as a **Code Quality** issue (a diff-side
+review-comment widget). `--format gitlab-sast` targets GitLab's **Security**
+surface: the Vulnerability Report, the project security dashboard, and any
+[severity-based merge-request approval rule](https://docs.gitlab.com/ee/user/application_security/policies/scan-result-policies.html).
+It emits GitLab's native [SAST Report v15](https://gitlab.com/gitlab-org/security-products/security-report-schemas)
+JSON document — one vulnerability per finding with GitLab-native severity
+(`Critical`/`High`/`Medium`/`Low`/`Info`), a stable per-finding `id` for
+lifecycle tracking, and a `sast` category. Two different GitLab UIs, no
+overlap; both are free on every GitLab tier.
+
+```bash
+omen --contract MyContract.sol --input-type sol --check all --format gitlab-sast > gl-sast-report.json
+```
+
+```json
+{
+  "version": "15.0.0",
+  "scan": {
+    "analyzer": {"id": "omen", "name": "omen", "version": "0.1.0", "vendor": {"name": "omen"}},
+    "scanner": {"id": "omen", "name": "omen", "version": "0.1.0", "vendor": {"name": "omen"}},
+    "type": "sast",
+    "start_time": "1970-01-01T00:00:00",
+    "end_time": "1970-01-01T00:00:00",
+    "status": "success"
+  },
+  "vulnerabilities": [
+    {
+      "id": "reentrancy|slither:reentrancy-eth|MyContract|MyContract.sol#42-47",
+      "category": "sast",
+      "name": "reentrancy in withdraw()",
+      "message": "reentrancy in withdraw()",
+      "description": "external call before state update",
+      "severity": "High",
+      "scanner": {"id": "omen", "name": "omen"},
+      "identifiers": [
+        {"type": "omen_category", "name": "omen category: reentrancy", "value": "reentrancy"},
+        {"type": "omen_detector", "name": "omen detector: slither:reentrancy-eth", "value": "slither:reentrancy-eth"}
+      ],
+      "location": {"file": "MyContract.sol", "start_line": 42, "end_line": 47}
+    }
+  ]
+}
+```
+
+omen's five-level severity (`critical`/`high`/`medium`/`low`/`informational`)
+maps onto GitLab SAST's five **one-to-one** in the natural worst-first order:
+`critical` → `Critical`, `high` → `High`, `medium` → `Medium`, `low` → `Low`,
+`informational` → `Info`. The vulnerability `id` is omen's existing finding
+fingerprint (`category|detector|contract|location`) — the same identity
+`--baseline`/`--diff`/`--sarif-baseline` use — so GitLab's vulnerability
+lifecycle tracking (detected → confirmed → dismissed → resolved) sees the
+same finding across runs.
+
+In a GitLab CI workflow, upload the report as the `reports:sast` artifact and
+GitLab ingests it directly:
+
+```yaml
+omen-sast:
+  image: python:3.13
+  script:
+    - pip install omen
+    - omen --contract MyContract.sol --input-type sol --check all --format gitlab-sast -o gl-sast-report.json
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+    when: always
+```
+
+Findings then appear in the merge-request **Security** widget, the project
+**Vulnerability Report**, and the **Security Dashboard**. Combine with a
+[scan-result policy](https://docs.gitlab.com/ee/user/application_security/policies/scan-result-policies.html)
+to require approval on any new `High`/`Critical` vulnerability — the GitLab
+analogue of the `--fail-on high` CI gate.
+
+The `scan.start_time`/`end_time` fields are emitted as a deterministic
+sentinel (`1970-01-01T00:00:00`) rather than a wall-clock timestamp, so the
+report is byte-stable across runs (the same property every other omen
+formatter has) and the formatter takes no clock dependency. Real pipeline
+timing belongs to the GitLab runner, which already stamps the job.
+
+A clean scan (no findings) emits a well-formed empty-vulnerabilities
+document. The GitLab SAST schema strictly requires a `file` on every
+vulnerability `location`, so a bytecode-mode finding (no source mapping)
+cannot be represented and is skipped — prefer `--format json` or `sarif` for
+full coverage of a bytecode scan. Like the other scan formats, `gitlab-sast`
+applies to single-`--contract` mode; a `--batch` run always emits its JSONL
+stream.
 
 ### SARIF-native suppression with a baseline
 

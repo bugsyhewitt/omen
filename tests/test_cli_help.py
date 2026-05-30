@@ -53,6 +53,8 @@ def test_help_lists_format_choices():
     assert "checkstyle" in text
     # sonarqube format (POST_V01 R3.8): SonarQube Generic Issue Import JSON.
     assert "sonarqube" in text
+    # gitlab-sast format (POST_V01 R3.9): GitLab SAST Report v15 JSON.
+    assert "gitlab-sast" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -236,6 +238,49 @@ def test_sonarqube_format_scan_runs_end_to_end():
     assert isinstance(data["issues"], list)
     # Bytecode findings are skipped (no filePath), so the document is empty.
     assert data["issues"] == []
+
+
+def test_gitlab_sast_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format gitlab-sast is exercisable
+    # in CI on a fresh checkout. The GitLab SAST schema requires
+    # location.file on every vulnerability, which a bytecode finding (no
+    # source mapping) cannot supply, so the bytecode suicidal finding is
+    # skipped and the document is the well-formed empty-vulnerabilities form
+    # — the honest "this format cannot represent that finding" failure
+    # mode, and the behaviour the unit tests pin.
+    import json as _json
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "gitlab-sast",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    # gitlab-sast output is a JSON document with the GitLab SAST shape.
+    assert out.lstrip().startswith("{")
+    data = _json.loads(out)
+    assert "version" in data and data["version"].startswith("15.")
+    assert data["scan"]["type"] == "sast"
+    assert "vulnerabilities" in data
+    assert isinstance(data["vulnerabilities"], list)
+    # Bytecode findings are skipped (no file), so the vulnerabilities list
+    # is empty — the rest of the envelope still emits.
+    assert data["vulnerabilities"] == []
 
 
 def test_cli_help_runs_as_subprocess():
