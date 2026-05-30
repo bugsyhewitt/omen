@@ -317,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--format",
         default=None,
-        choices=["json", "h1md", "sarif", "text", "gha", "junit", "checkstyle", "sonarqube"],
+        choices=["json", "h1md", "sarif", "text", "gha", "junit", "checkstyle", "sonarqube", "gitlab-sast"],
         help=(
             "output format. For a scan: json (default), text (a compact "
             "human-readable terminal summary), h1md, sarif (a SARIF 2.1.0 "
@@ -334,12 +334,18 @@ def build_parser() -> argparse.ArgumentParser:
             "ingested natively by GitLab CI's Code Quality widget, Reviewdog, "
             "SonarQube, and the Jenkins Checkstyle plugin so findings surface "
             "as code-review annotations in the MR/PR diff; POST_V01 R3.7), "
-            "or sonarqube (SonarQube's native Generic Issue Import Format JSON "
+            "sonarqube (SonarQube's native Generic Issue Import Format JSON "
             "— one issue per finding with BLOCKER/CRITICAL/MAJOR/MINOR/INFO "
             "severity and VULNERABILITY type, ingested directly via "
             "sonar.externalIssuesReportPaths so omen findings appear as "
             "first-class external issues in the SonarQube/SonarCloud UI; "
-            "POST_V01 R3.8). For --list-checks: text (default) or json."
+            "POST_V01 R3.8), or gitlab-sast (GitLab's native SAST Report v15 "
+            "JSON — one vulnerability per finding with Critical/High/Medium/"
+            "Low/Info severity, uploaded as the reports:sast job artifact so "
+            "omen findings appear as first-class vulnerabilities in GitLab's "
+            "Security Dashboard, the MR Vulnerability Report, and any "
+            "severity-based merge-request approval rule; POST_V01 R3.9). "
+            "For --list-checks: text (default) or json."
         ),
     )
     parser.add_argument(

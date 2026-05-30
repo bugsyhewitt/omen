@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -35,7 +35,17 @@ reaches SonarQube via its generic *Checkstyle* importer (a one-format-fits-all
 fallback), ``sonarqube`` targets SonarQube's purpose-built generic issue
 importer directly, with native SonarQube severity/type fields, so omen findings
 land as first-class external issues in the SonarQube/SonarCloud UI with no
-format translation step.
+format translation step. The gitlab-sast format (POST_V01 R3.9) emits GitLab's
+native [SAST Report v15](https://gitlab.com/gitlab-org/security-products/security-report-schemas)
+JSON document — the schema GitLab CI's *Security Dashboard* and the MR
+*Vulnerability Report* widget ingest directly via the ``sast`` job artifact.
+Where ``checkstyle`` reaches GitLab as a *Code Quality* issue (a diff-side
+review comment) and ``sonarqube`` targets the SonarQube ecosystem, ``gitlab-
+sast`` targets GitLab's *security* surface: findings become first-class
+vulnerabilities in the GitLab vulnerability management UI, with the native
+``Critical``/``High``/``Medium``/``Low``/``Info`` severity and the SAST
+category that GitLab's merge-request approval rules can gate on. The audience
+the existing ``checkstyle`` GitLab path does not cover.
 """
 
 from __future__ import annotations
@@ -1011,6 +1021,261 @@ def to_sonarqube(report: AnalysisReport, *, indent: int = 2) -> str:
     return json.dumps({"issues": issues}, indent=indent, sort_keys=False)
 
 
+# --- GitLab SAST Report (POST_V01 R3.9) ----------------------------------
+#
+# GitLab's SAST report is a JSON document with a fixed top-level shape
+# (``version``, ``scan``, ``vulnerabilities``); when a job uploads it as the
+# ``reports:sast`` artifact, GitLab ingests every entry as a Vulnerability,
+# powers the merge-request *Security* widget, the project *Vulnerability
+# Report*, and any merge-request approval rule that gates on severity. The
+# schema is versioned (``security-report-schemas`` v15.x at time of writing).
+# omen targets v15 — the latest stable major as of 2026 — and pins the version
+# string so a consumer can validate it. The two GitLab-facing formats omen now
+# offers are complementary: ``--format checkstyle`` reaches GitLab's *Code
+# Quality* widget (the diff-side issue list a reviewer sees in the MR), and
+# ``--format gitlab-sast`` reaches GitLab's *Security* surface (vulnerability
+# management, security dashboard, severity-based MR approval gates) — two
+# different GitLab UIs with no overlap, the same way ``sarif`` and ``gha``
+# cover two different GitHub UIs.
+
+# omen severity (informational/low/medium/high/critical) -> GitLab SAST
+# severity (Info/Low/Medium/High/Critical). GitLab also allows "Unknown",
+# which we never emit (every omen finding has a known severity). The mapping
+# is one-to-one in the natural worst-first order, matching how `to_sonarqube`
+# projects onto SonarQube's five levels — lossless in practice.
+_SEVERITY_TO_GITLAB_SAST = {
+    Severity.CRITICAL.value: "Critical",
+    Severity.HIGH.value: "High",
+    Severity.MEDIUM.value: "Medium",
+    Severity.LOW.value: "Low",
+    Severity.INFORMATIONAL.value: "Info",
+}
+
+# GitLab SAST report schema version omen targets. v15 is the latest stable
+# major in the security-report-schemas repo as of 2026 and is what current
+# GitLab CE/EE releases ingest. Pinning a precise patch version keeps the
+# document validatable; bumping the patch is a single-line change here.
+_GITLAB_SAST_SCHEMA_VERSION = "15.0.0"
+
+# GitLab SAST schema requires ``scan.start_time``/``scan.end_time`` even when
+# they are not meaningful to the consumer (the project dashboard already
+# tracks pipeline timing). To keep the formatter pure / byte-stable / testable
+# — the rest of omen's formatters take no clock dependency, and a varying
+# timestamp would make every report differ — we emit a deterministic epoch
+# sentinel. Real wall-clock timing belongs to the CI runner, which already
+# stamps the pipeline; the SAST report is a content artifact, not a timing
+# record.
+_GITLAB_SAST_EPOCH = "1970-01-01T00:00:00"
+
+
+def _gitlab_sast_location(f: Finding) -> "dict | None":
+    """Build the GitLab SAST ``location`` block for a finding.
+
+    GitLab's SAST schema requires every vulnerability to carry a ``location``
+    with at least a ``file`` (and recommends ``start_line``/``end_line``).
+    Source-mode findings parse the file path and 1-based line range from
+    omen's ``Contract.sol#start-end`` mapping (the same shape every other
+    location-aware formatter consumes). Bytecode-mode findings have no file
+    to anchor to — GitLab has no concept of "an opcode offset is the
+    location" — so we return ``None`` and the caller skips the finding, the
+    honest "this format cannot represent that finding" failure mode parallel
+    to the SonarQube formatter's bytecode handling.
+    """
+    if not f.evidence.source_mapping:
+        return None
+    loc = f.evidence.source_mapping[0]
+    file_path = loc
+    start: int | None = None
+    end: int | None = None
+    if "#" in loc:
+        file_path, _, span = loc.partition("#")
+        start_s, _, end_s = span.partition("-")
+        try:
+            start = int(start_s)
+        except ValueError:
+            start = None
+        try:
+            end = int(end_s) if end_s else None
+        except ValueError:
+            end = None
+    if not file_path:
+        return None
+    location: dict = {"file": file_path}
+    if start is not None:
+        location["start_line"] = start
+        # GitLab's schema treats end_line as optional; we set it only when
+        # the mapping carries a real range, so a single-line finding doesn't
+        # synthesize a fake end.
+        if end is not None:
+            location["end_line"] = end
+    return location
+
+
+def _gitlab_sast_identifiers(f: Finding) -> "list[dict]":
+    """Build the GitLab SAST ``identifiers`` list for a finding.
+
+    GitLab uses ``identifiers`` for vulnerability deduplication across runs
+    and for cross-tool correlation (two scanners reporting the "same" CWE
+    show as one vulnerability). The schema requires each identifier to have
+    a ``type``, ``name``, and ``value``; ``url`` is optional. omen emits two:
+
+      - ``omen_category`` carrying the omen detection class (e.g.
+        ``reentrancy``) — this is the *grouping* identifier, so GitLab's
+        Vulnerability Report can filter on omen's category taxonomy.
+      - ``omen_detector`` carrying the underlying Slither detector id (e.g.
+        ``slither:reentrancy-eth``) — the *precise* identifier, distinguishing
+        two findings of the same omen category produced by different
+        underlying checks (parallel to how ``sonarqube``'s ``ruleId`` combines
+        category + detector).
+
+    A finding with an empty detector emits only the category identifier so
+    the list is never empty (GitLab requires at least one identifier).
+    """
+    identifiers: list[dict] = [
+        {
+            "type": "omen_category",
+            "name": f"omen category: {f.category}",
+            "value": f.category,
+        }
+    ]
+    detector = (f.detector or "").strip()
+    if detector:
+        identifiers.append(
+            {
+                "type": "omen_detector",
+                "name": f"omen detector: {detector}",
+                "value": detector,
+            }
+        )
+    return identifiers
+
+
+def _gitlab_sast_vulnerability_id(f: Finding) -> str:
+    """Stable per-finding id for the GitLab SAST ``id`` field.
+
+    GitLab requires each vulnerability to carry an ``id`` that is stable
+    across runs (it uses the id to track a vulnerability's lifecycle —
+    detected, confirmed, dismissed, resolved). We reuse the same
+    fingerprint primitive ``--baseline`` / ``--diff`` / ``--sarif-baseline``
+    use (``finding_fingerprint``), so the same finding gets the same id
+    across runs, and the id matches the identity GitLab's own
+    vulnerability-tracking logic should treat as stable. Returning the raw
+    fingerprint string keeps the id human-readable in the JSON (it is a
+    ``|``-joined ``category|detector|contract|location`` string), and is
+    valid per the SAST schema, which constrains ``id`` only to be a
+    non-empty string.
+    """
+    return finding_fingerprint(f)
+
+
+def to_gitlab_sast(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as a GitLab SAST Report v15 JSON document.
+
+    POST_V01 R3.9. One JSON document with a fixed top-level shape
+    (``version``, ``scan``, ``vulnerabilities``); one entry in
+    ``vulnerabilities`` per finding in the report's existing worst-first
+    order (the formatter never re-orders or re-filters — a pure formatter
+    over ``report.findings`` like every other format).
+
+    The output schema matches GitLab's `SAST Report v15
+    <https://gitlab.com/gitlab-org/security-products/security-report-schemas>`_,
+    which GitLab CE/EE ingests directly when uploaded as the ``reports:sast``
+    job artifact. Each vulnerability carries:
+
+      - ``id``: a stable per-finding fingerprint (the same one
+        ``--baseline``/``--diff`` use), so GitLab can track a finding's
+        lifecycle across runs.
+      - ``category``: always ``"sast"`` (the GitLab artifact bucket; omen is
+        a static analyzer for security weaknesses).
+      - ``name``/``message``: the finding's title — the short summary
+        GitLab's Vulnerability Report shows in the row.
+      - ``description``: the finding's description — the longer body shown
+        when the row is expanded.
+      - ``severity``: one of ``Critical``/``High``/``Medium``/``Low``/``Info``
+        — omen's five-level taxonomy maps onto GitLab's five one-to-one
+        (informational → ``Info``, otherwise the title-cased name). GitLab's
+        merge-request approval rules can gate on this severity.
+      - ``scanner``: ``{id: "omen", name: "omen"}`` — the engine label
+        GitLab groups external scanners under.
+      - ``identifiers``: omen category + detector identifiers, for GitLab's
+        deduplication and cross-tool correlation.
+      - ``location``: ``file`` (+ optional ``start_line``/``end_line``), the
+        GitLab-required anchor.
+
+    Unlike ``--format checkstyle`` (which reaches GitLab via the *Code
+    Quality* artifact — a diff-side review-comment widget), ``--format
+    gitlab-sast`` targets GitLab's *Security* surface (the Vulnerability
+    Report, the security dashboard, severity-based MR approval gates). Two
+    different GitLab UIs with no overlap; both are free on every GitLab
+    tier.
+
+    Bytecode-mode findings carry no source mapping (no ``file``) and the
+    GitLab SAST schema requires ``location.file``, so they are skipped —
+    they cannot be projected without inventing a fake path. A report
+    containing only bytecode-mode findings therefore emits a well-formed
+    empty-vulnerabilities document, the same shape a clean scan produces;
+    the caller can prefer ``--format json``/``sarif`` for full coverage of
+    a bytecode scan.
+
+    The ``scan`` block's ``start_time``/``end_time`` are emitted as a
+    deterministic epoch sentinel (``"1970-01-01T00:00:00"``) rather than a
+    wall-clock timestamp, so the report is byte-stable across runs (the
+    same property every other omen formatter has) and the formatter takes
+    no clock dependency. Real pipeline timing belongs to the CI runner,
+    which already stamps it; the SAST report is a content artifact.
+    """
+    vendor = {"name": "omen"}
+    analyzer = {
+        "id": "omen",
+        "name": "omen",
+        "version": __version__,
+        "vendor": vendor,
+    }
+    scanner = {
+        "id": "omen",
+        "name": "omen",
+        "version": __version__,
+        "vendor": vendor,
+    }
+    scanner_short = {"id": "omen", "name": "omen"}
+
+    vulnerabilities: list[dict] = []
+    for f in report.findings:
+        location = _gitlab_sast_location(f)
+        if location is None:
+            # No file available (bytecode mode). Skip rather than emit a
+            # GitLab-invalid vulnerability.
+            continue
+        title = f.title or f.category
+        vulnerabilities.append(
+            {
+                "id": _gitlab_sast_vulnerability_id(f),
+                "category": "sast",
+                "name": title,
+                "message": title,
+                "description": f.description or title,
+                "severity": _SEVERITY_TO_GITLAB_SAST.get(f.severity.value, "Unknown"),
+                "scanner": scanner_short,
+                "identifiers": _gitlab_sast_identifiers(f),
+                "location": location,
+            }
+        )
+
+    document = {
+        "version": _GITLAB_SAST_SCHEMA_VERSION,
+        "scan": {
+            "analyzer": analyzer,
+            "scanner": scanner,
+            "type": "sast",
+            "start_time": _GITLAB_SAST_EPOCH,
+            "end_time": _GITLAB_SAST_EPOCH,
+            "status": "success",
+        },
+        "vulnerabilities": vulnerabilities,
+    }
+    return json.dumps(document, indent=indent, sort_keys=False)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -1040,4 +1305,6 @@ def render(
         return to_checkstyle(report)
     if fmt == "sonarqube":
         return to_sonarqube(report)
+    if fmt == "gitlab-sast":
+        return to_gitlab_sast(report)
     raise ValueError(f"unknown output format: {fmt}")

@@ -1,4 +1,4 @@
-"""Output format tests: text, JSON, H1-markdown, SARIF, gha, junit, and checkstyle."""
+"""Output format tests: text, JSON, H1-markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from omen.formats import (
     render,
     to_checkstyle,
     to_gha,
+    to_gitlab_sast,
     to_h1md,
     to_json,
     to_junit,
@@ -68,6 +69,7 @@ def test_render_dispatch():
     assert render(_report(), "junit").lstrip().startswith("<?xml")
     assert render(_report(), "checkstyle").lstrip().startswith("<?xml")
     assert render(_report(), "sonarqube").startswith("{")
+    assert render(_report(), "gitlab-sast").startswith("{")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -1153,3 +1155,281 @@ def test_sonarqube_issue_schema_keys_are_exactly_the_required_set():
 
 def test_sonarqube_render_dispatch_matches_to_sonarqube():
     assert render(_source_report(), "sonarqube") == to_sonarqube(_source_report())
+
+
+# --- gitlab-sast format (POST_V01 R3.9) ----------------------------------
+
+
+def test_gitlab_sast_is_valid_json_with_top_level_shape():
+    data = json.loads(to_gitlab_sast(_source_report()))
+    assert isinstance(data, dict)
+    # Three required top-level keys per GitLab SAST schema v15.
+    assert "version" in data
+    assert "scan" in data
+    assert "vulnerabilities" in data
+    assert isinstance(data["vulnerabilities"], list)
+
+
+def test_gitlab_sast_schema_version_is_v15():
+    data = json.loads(to_gitlab_sast(_source_report()))
+    # Pinned major: GitLab's security-report-schemas v15 is the current stable.
+    assert data["version"].startswith("15.")
+
+
+def test_gitlab_sast_scan_block_carries_required_fields():
+    data = json.loads(to_gitlab_sast(_source_report()))
+    scan = data["scan"]
+    # Per GitLab SAST schema v15: analyzer, scanner, type, start_time,
+    # end_time, status are all required on the scan object.
+    for key in ("analyzer", "scanner", "type", "start_time", "end_time", "status"):
+        assert key in scan, f"scan missing {key}"
+    assert scan["type"] == "sast"
+    assert scan["status"] == "success"
+    # Both analyzer and scanner identify omen, with a vendor block.
+    assert scan["analyzer"]["id"] == "omen"
+    assert scan["analyzer"]["name"] == "omen"
+    assert scan["analyzer"]["vendor"] == {"name": "omen"}
+    assert scan["scanner"]["id"] == "omen"
+    assert scan["scanner"]["vendor"] == {"name": "omen"}
+
+
+def test_gitlab_sast_timestamps_are_deterministic_epoch_sentinel():
+    # The formatter is pure (no clock dependency); two calls produce
+    # byte-identical output, and the timestamps are the documented sentinel.
+    a = to_gitlab_sast(_source_report())
+    b = to_gitlab_sast(_source_report())
+    assert a == b
+    scan = json.loads(a)["scan"]
+    assert scan["start_time"] == "1970-01-01T00:00:00"
+    assert scan["end_time"] == "1970-01-01T00:00:00"
+
+
+def test_gitlab_sast_one_vulnerability_per_finding_in_report_order():
+    # _source_report() has access-control (high) then tx-origin (medium).
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    assert len(vulns) == 2
+    # Order matches report.findings (the formatter never re-orders).
+    assert vulns[0]["name"] == "access-control contract (protected-vars)"
+    assert vulns[1]["name"] == "tx-origin contract (tx-origin)"
+
+
+def test_gitlab_sast_severity_maps_h1_to_gitlab_five_to_five():
+    # critical -> Critical, high -> High, medium -> Medium,
+    # low -> Low, informational -> Info.
+    findings: list[Finding] = []
+    for sev in (
+        Severity.CRITICAL,
+        Severity.HIGH,
+        Severity.MEDIUM,
+        Severity.LOW,
+        Severity.INFORMATIONAL,
+    ):
+        findings.append(
+            Finding(
+                category="suicidal",
+                severity=sev,
+                title=f"t-{sev.value}",
+                description=f"d-{sev.value}",
+                detector=f"slither:{sev.value}",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#1-2"]),
+            )
+        )
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["suicidal"],
+        findings=findings,
+    )
+    severities = [
+        v["severity"] for v in json.loads(to_gitlab_sast(report))["vulnerabilities"]
+    ]
+    assert severities == ["Critical", "High", "Medium", "Low", "Info"]
+
+
+def test_gitlab_sast_category_is_sast_for_every_vulnerability():
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    assert all(v["category"] == "sast" for v in vulns)
+
+
+def test_gitlab_sast_scanner_short_block_on_each_vulnerability():
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    for v in vulns:
+        assert v["scanner"] == {"id": "omen", "name": "omen"}
+
+
+def test_gitlab_sast_identifiers_carry_category_and_detector():
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    ac = next(v for v in vulns if v["identifiers"][0]["value"] == "access-control")
+    types = {i["type"] for i in ac["identifiers"]}
+    assert types == {"omen_category", "omen_detector"}
+    by_type = {i["type"]: i for i in ac["identifiers"]}
+    assert by_type["omen_category"]["value"] == "access-control"
+    assert by_type["omen_detector"]["value"] == "slither:protected-vars"
+
+
+def test_gitlab_sast_identifiers_fall_back_to_category_only_when_detector_empty():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+        ],
+    )
+    vulns = json.loads(to_gitlab_sast(report))["vulnerabilities"]
+    # At least one identifier is required by the schema; omen drops the
+    # detector entry when the detector is empty rather than emit an empty
+    # value.
+    assert len(vulns[0]["identifiers"]) == 1
+    assert vulns[0]["identifiers"][0]["type"] == "omen_category"
+    assert vulns[0]["identifiers"][0]["value"] == "suicidal"
+
+
+def test_gitlab_sast_location_carries_file_and_line_range():
+    # access-control source mapping in _source_report() is Vuln.sol#12-18.
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    ac = next(v for v in vulns if v["identifiers"][0]["value"] == "access-control")
+    location = ac["location"]
+    assert location["file"] == "Vuln.sol"
+    assert location["start_line"] == 12
+    assert location["end_line"] == 18
+
+
+def test_gitlab_sast_single_line_mapping_has_no_end_line():
+    # tx-origin source mapping is Vuln.sol#25 (single line, no -end).
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    tx = next(v for v in vulns if v["identifiers"][0]["value"] == "tx-origin")
+    location = tx["location"]
+    assert location["file"] == "Vuln.sol"
+    assert location["start_line"] == 25
+    assert "end_line" not in location
+
+
+def test_gitlab_sast_bytecode_finding_is_skipped():
+    # The GitLab SAST schema strictly requires location.file. A bytecode
+    # finding (no source mapping) cannot be projected and must be skipped
+    # rather than emit a GitLab-invalid vulnerability.
+    data = json.loads(to_gitlab_sast(_report()))
+    assert data["vulnerabilities"] == []
+    # The scan block is still valid (clean-document shape).
+    assert data["scan"]["type"] == "sast"
+
+
+def test_gitlab_sast_mixed_source_and_bytecode_skips_only_bytecode():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="<project>",
+        checks=["all"],
+        findings=[
+            Finding(  # bytecode finding -> skipped
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="omen:bytecode-selfdestruct",
+                contract="0xabc",
+                confidence="high",
+                evidence=Evidence(opcodes=[{"opcode": "SELFDESTRUCT", "offset": 16}]),
+            ),
+            Finding(  # source finding -> kept
+                category="reentrancy",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:reentrancy-eth",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#5-6"]),
+            ),
+        ],
+    )
+    vulns = json.loads(to_gitlab_sast(report))["vulnerabilities"]
+    assert len(vulns) == 1
+    assert vulns[0]["identifiers"][0]["value"] == "reentrancy"
+
+
+def test_gitlab_sast_empty_report_is_valid_empty_document():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    data = json.loads(to_gitlab_sast(report))
+    assert data["vulnerabilities"] == []
+    assert data["version"].startswith("15.")
+    assert data["scan"]["type"] == "sast"
+
+
+def test_gitlab_sast_vulnerability_id_is_stable_per_finding():
+    # The id must be stable across two runs of the same input — GitLab uses
+    # it for vulnerability lifecycle tracking. We reuse the same fingerprint
+    # primitive --baseline/--diff/--sarif-baseline use, so identity is
+    # uniform across the omen feature surface.
+    from omen.findings import finding_fingerprint
+
+    a = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    b = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    assert [v["id"] for v in a] == [v["id"] for v in b]
+    # And the id is the fingerprint string itself.
+    source = _source_report()
+    assert a[0]["id"] == finding_fingerprint(source.findings[0])
+    assert a[1]["id"] == finding_fingerprint(source.findings[1])
+
+
+def test_gitlab_sast_message_and_name_use_title_description_uses_description():
+    # The 'name'/'message' fields surface in GitLab's row summary; the
+    # 'description' is the expanded body. omen's title -> name/message;
+    # omen's description -> description.
+    vulns = json.loads(to_gitlab_sast(_source_report()))["vulnerabilities"]
+    ac = next(v for v in vulns if v["identifiers"][0]["value"] == "access-control")
+    assert ac["name"] == "access-control contract (protected-vars)"
+    assert ac["message"] == ac["name"]
+    assert ac["description"] == "missing onlyOwner guard"
+
+
+def test_gitlab_sast_description_falls_back_to_title_when_empty():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="title-fallback",
+                description="",
+                detector="slither:suicidal",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+        ],
+    )
+    vulns = json.loads(to_gitlab_sast(report))["vulnerabilities"]
+    assert vulns[0]["description"] == "title-fallback"
+
+
+def test_gitlab_sast_render_dispatch_matches_to_gitlab_sast():
+    assert render(_source_report(), "gitlab-sast") == to_gitlab_sast(_source_report())
