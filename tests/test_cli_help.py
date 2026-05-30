@@ -57,6 +57,8 @@ def test_help_lists_format_choices():
     assert "gitlab-sast" in text
     # azure-devops format (POST_V01 R3.10): Azure DevOps pipeline annotations.
     assert "azure-devops" in text
+    # teams-webhook format (POST_V01 R3.11): Microsoft Teams Incoming Webhook MessageCard.
+    assert "teams-webhook" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -321,6 +323,41 @@ def test_azure_devops_format_scan_runs_end_to_end():
             f"non-command line in azure-devops output: {line!r}"
         )
     assert "code=suicidal" in out
+
+
+def test_teams_webhook_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format teams-webhook is exercisable
+    # in CI on a fresh checkout. The output must be a single valid JSON
+    # MessageCard payload Teams' Incoming Webhook can ingest as-is.
+    from pathlib import Path
+    import json as _json
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "teams-webhook",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    data = _json.loads(out)
+    assert data["@type"] == "MessageCard"
+    assert data["@context"] == "https://schema.org/extensions"
+    assert data["title"] == "omen security scan"
+    assert "themeColor" in data
+    assert isinstance(data["sections"], list)
 
 
 def test_cli_help_runs_as_subprocess():
