@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops, teams-webhook.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -1625,6 +1625,205 @@ def to_azure_devops(report: AnalysisReport) -> str:
     return "\n".join(_azdo_line(f) for f in report.findings)
 
 
+# Microsoft Teams incoming-webhook (POST_V01 R3.11). Microsoft Teams' Office
+# 365 Connector / Incoming Webhook endpoint ingests a *Legacy actionable
+# MessageCard* (``@type: MessageCard``) JSON payload directly: a top-level
+# header (``summary``/``title``/``themeColor``/``text``) plus a ``sections``
+# array, one section per finding, each carrying ``facts`` (key/value pairs the
+# Teams UI renders as a definition list) and an ``activityTitle``/``text``
+# block for the finding body. The MessageCard schema predates Adaptive Cards
+# but is the only schema Incoming Webhooks accept without an Azure-Bot-side
+# Power Automate flow — so it is the right pick for the "post omen findings to
+# a Teams channel from a CI job with one ``curl``" lever. omen's five-level
+# severity is projected onto a Teams-conventional themeColor (the card border
+# stripe) — red for critical/high, amber for medium, gray for low/
+# informational — so a channel reader gets the worst-case at-a-glance signal
+# without needing to read the facts list, parallel to how the gitlab-sast
+# formatter projects severity onto GitLab's color-coded vulnerability badges.
+# A scan that found nothing still emits a single green "no findings" card so
+# the CI step leaves a visible "omen ran" trace in the channel rather than
+# silent empty output.
+
+_SEVERITY_TO_TEAMS_COLOR = {
+    Severity.CRITICAL: "A6192E",
+    Severity.HIGH: "D13438",
+    Severity.MEDIUM: "F2C811",
+    Severity.LOW: "5C2D91",
+    Severity.INFORMATIONAL: "8A8886",
+}
+
+_TEAMS_NO_FINDINGS_COLOR = "107C10"
+
+
+def _teams_overall_color(report: AnalysisReport) -> str:
+    """Pick the card-level themeColor from the *worst* severity in the report.
+
+    The Teams MessageCard schema carries one top-level ``themeColor`` (the
+    vertical stripe on the card's left edge) — there is no per-section color
+    field a connector renders. So the card color must summarize the whole
+    report. We pick the worst severity present (the same worst-first ordering
+    the report itself uses) so a channel reader sees the most severe finding's
+    color before reading any text — the same projection the gitlab-sast and
+    sonarqube color-coded UIs use for their per-vulnerability badges, applied
+    at the card-aggregate level Teams gives us.
+    """
+    if not report.findings:
+        return _TEAMS_NO_FINDINGS_COLOR
+    worst = max(report.findings, key=lambda f: severity_rank(f.severity))
+    return _SEVERITY_TO_TEAMS_COLOR.get(worst.severity, _SEVERITY_TO_TEAMS_COLOR[Severity.MEDIUM])
+
+
+def _teams_location(f: Finding) -> str | None:
+    """Render a finding's source mapping as a single ``file:line`` string.
+
+    The Teams MessageCard ``facts`` list is plain key/value text — there is no
+    structured link-to-source field. We collapse omen's ``Contract.sol#12-18``
+    source-mapping shape (same parse the SARIF/azdo helpers use) into the
+    conventional ``file:line`` form a reviewer can recognize. A finding with no
+    source mapping (bytecode mode) returns ``None`` and the caller omits the
+    location fact rather than rendering an empty value.
+    """
+    if not f.evidence.source_mapping:
+        return None
+    loc = f.evidence.source_mapping[0]
+    if "#" not in loc:
+        return loc
+    uri, _, span = loc.partition("#")
+    start_s, _, _end_s = span.partition("-")
+    try:
+        int(start_s)
+    except ValueError:
+        return uri
+    return f"{uri}:{start_s}"
+
+
+def _teams_section(index: int, f: Finding) -> dict:
+    """Build one MessageCard ``section`` for a finding.
+
+    Each section is the Teams-UI equivalent of one annotation: a bold
+    ``activityTitle`` carrying the worst-first index plus the severity/category
+    tag, a ``facts`` list (severity / category / confidence / contract /
+    detector / location) the Teams UI renders as a two-column definition list,
+    and a ``text`` block carrying the finding's description. The
+    ``markdown: true`` flag lets the Teams renderer bold the activity title;
+    every field is preserved verbatim from the omen finding so the projection
+    is not lossy (Teams' two-column facts list and the markdown body together
+    carry the same information the json/text/h1md formatters carry).
+    """
+    facts: list[dict] = [
+        {"name": "Severity", "value": f.severity.value},
+        {"name": "Category", "value": f.category},
+    ]
+    if f.confidence:
+        facts.append({"name": "Confidence", "value": f.confidence})
+    if f.contract:
+        facts.append({"name": "Contract", "value": f.contract})
+    if f.detector:
+        facts.append({"name": "Detector", "value": f.detector})
+    loc = _teams_location(f)
+    if loc:
+        facts.append({"name": "Location", "value": loc})
+
+    title = f.title or f.category
+    body = f.description or ""
+    section: dict = {
+        "activityTitle": f"**#{index}. [{f.severity.value}/{f.category}] {title}**",
+        "facts": facts,
+        "markdown": True,
+    }
+    if body:
+        section["text"] = body
+    return section
+
+
+def to_teams_webhook(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as a Microsoft Teams Incoming Webhook MessageCard.
+
+    POST_V01 R3.11. One ``@type: MessageCard`` JSON document, one ``section``
+    per finding in the report's existing worst-first order (a pure formatter
+    over ``report.findings`` like every other format — never re-orders, never
+    re-filters).
+
+    The output schema matches Microsoft's `Legacy actionable MessageCard
+    <https://learn.microsoft.com/en-us/outlook/actionable-messages/message-card-reference>`_,
+    the only payload shape Microsoft Teams Incoming Webhooks accept without
+    routing through an Azure-Bot Power Automate flow. The card carries:
+
+      - ``@type`` / ``@context``: the MessageCard envelope.
+      - ``summary``: the short string Teams uses for notifications / channel
+        previews ("omen security scan: N findings").
+      - ``themeColor``: a hex color projected from the *worst* severity in the
+        report — red for critical/high, amber for medium, purple for low,
+        gray for informational, green for an empty report — so a channel
+        reader sees the worst-case signal on the card's left stripe before
+        reading any text.
+      - ``title``: a human-readable header ("omen security scan").
+      - ``text``: a one-line scan summary (tool/version + origin + finding
+        count + per-severity breakdown) so a reader who doesn't expand the
+        sections still gets the gist.
+      - ``sections``: one section per finding, each with an ``activityTitle``
+        (index + severity/category tag), a ``facts`` definition list
+        (severity, category, confidence, contract, detector, location), and a
+        ``text`` block carrying the finding's description.
+
+    Unlike ``--format sarif`` (a SARIF 2.1.0 log uploaded to GitHub Advanced
+    Security) and ``--format azure-devops`` (Azure Pipelines logging commands
+    on the build stdout), ``--format teams-webhook`` targets Microsoft Teams
+    channels *directly* — the CI step pipes the rendered JSON straight to the
+    channel's Incoming Webhook URL with one ``curl -d @-`` invocation and the
+    findings appear as a posted card the channel members can react to, with
+    no Power Automate flow, no Azure Bot registration, and no Marketplace
+    extension.
+
+    An empty report still emits a single green "no findings" card so the
+    Teams channel gets a visible "omen ran, found nothing" trace rather than
+    silent empty output, parallel to how the gha/azure-devops formatters
+    degrade gracefully on an empty report.
+    """
+    counts: dict[str, int] = {sev.value: 0 for sev in SEVERITY_ORDER}
+    for f in report.findings:
+        counts[f.severity.value] = counts.get(f.severity.value, 0) + 1
+
+    shown = len(report.findings)
+    total = report.total_findings if report.total_findings is not None else shown
+    severity_summary = ", ".join(
+        f"{sev.value}={counts[sev.value]}" for sev in SEVERITY_ORDER if counts[sev.value]
+    )
+    if total > shown:
+        detail_findings = f"{shown} of {total} findings shown (--limit)"
+    else:
+        detail_findings = f"{shown} finding{'s' if shown != 1 else ''}"
+    summary_line = (
+        f"omen {report.version} scanned {report.origin} ({report.input_type}); "
+        f"{detail_findings}"
+    )
+    if severity_summary:
+        summary_line = f"{summary_line} [{severity_summary}]"
+
+    if shown == 0:
+        summary_line = (
+            f"omen {report.version} scanned {report.origin} ({report.input_type}); "
+            f"no findings"
+        )
+
+    sections = [_teams_section(i + 1, f) for i, f in enumerate(report.findings)]
+
+    notification_summary = (
+        f"omen security scan: {shown} finding{'s' if shown != 1 else ''}"
+    )
+
+    document: dict = {
+        "@type": "MessageCard",
+        "@context": "https://schema.org/extensions",
+        "summary": notification_summary,
+        "themeColor": _teams_overall_color(report),
+        "title": "omen security scan",
+        "text": summary_line,
+        "sections": sections,
+    }
+    return json.dumps(document, indent=indent, sort_keys=False)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -1660,4 +1859,6 @@ def render(
         return to_bitbucket_code_insights(report)
     if fmt == "azure-devops":
         return to_azure_devops(report)
+    if fmt == "teams-webhook":
+        return to_teams_webhook(report)
     raise ValueError(f"unknown output format: {fmt}")

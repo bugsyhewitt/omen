@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops,teams-webhook}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -329,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
             "gitlab-sast",
             "bitbucket-code-insights",
             "azure-devops",
+            "teams-webhook",
         ],
         help=(
             "output format. For a scan: json (default), text (a compact "
@@ -371,7 +372,13 @@ def build_parser() -> argparse.ArgumentParser:
             "lines the pipeline agent reads off stdout and turns into inline "
             "annotations on the build's Files tab and rows in the Errors / "
             "Warnings panel, with no upload step, no Marketplace extension, "
-            "and no paid tier; POST_V01 R3.10). For --list-checks: text "
+            "and no paid tier; POST_V01 R3.10), or teams-webhook (Microsoft "
+            "Teams Incoming Webhook MessageCard JSON — one card with one "
+            "section per finding plus a themeColor projected from the worst "
+            "severity in the report, piped straight to a Teams channel's "
+            "Incoming Webhook URL with one curl -d @- with no Power Automate "
+            "flow, no Azure Bot registration, and no Marketplace extension; "
+            "POST_V01 R3.11). For --list-checks: text "
             "(default) or json."
         ),
     )

@@ -19,6 +19,7 @@ from omen.formats import (
     to_junit,
     to_sarif,
     to_sonarqube,
+    to_teams_webhook,
     to_text,
 )
 
@@ -74,6 +75,7 @@ def test_render_dispatch():
     assert render(_report(), "gitlab-sast").startswith("{")
     assert render(_report(), "bitbucket-code-insights").startswith("{")
     assert render(_report(), "azure-devops").startswith("##vso[")
+    assert render(_report(), "teams-webhook").startswith("{")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -1894,3 +1896,201 @@ def test_azdo_source_mapping_without_hash_emits_no_linenumber():
     line = to_azure_devops(report)
     assert "sourcepath=V.sol" in line
     assert "linenumber=" not in line
+
+
+# --- teams-webhook format (POST_V01 R3.11) --------------------------------
+
+
+def test_teams_envelope_is_messagecard():
+    data = json.loads(to_teams_webhook(_source_report()))
+    assert data["@type"] == "MessageCard"
+    assert data["@context"] == "https://schema.org/extensions"
+    assert data["title"] == "omen security scan"
+    assert "themeColor" in data
+    assert "sections" in data and isinstance(data["sections"], list)
+
+
+def test_teams_one_section_per_finding_in_report_order():
+    data = json.loads(to_teams_webhook(_source_report()))
+    sections = data["sections"]
+    assert len(sections) == 2
+    # worst-first: high access-control then medium tx-origin
+    assert "access-control" in sections[0]["activityTitle"]
+    assert "tx-origin" in sections[1]["activityTitle"]
+    assert sections[0]["activityTitle"].startswith("**#1.")
+    assert sections[1]["activityTitle"].startswith("**#2.")
+
+
+def test_teams_facts_carry_per_finding_metadata():
+    data = json.loads(to_teams_webhook(_source_report()))
+    facts = {fact["name"]: fact["value"] for fact in data["sections"][0]["facts"]}
+    assert facts["Severity"] == "high"
+    assert facts["Category"] == "access-control"
+    assert facts["Confidence"] == "high"
+    assert facts["Contract"] == "Vuln"
+    assert facts["Detector"] == "slither:protected-vars"
+    assert facts["Location"] == "Vuln.sol:12"
+
+
+def test_teams_section_body_carries_description():
+    data = json.loads(to_teams_webhook(_source_report()))
+    assert data["sections"][0]["text"] == "missing onlyOwner guard"
+    assert data["sections"][1]["text"] == "tx.origin used for auth"
+
+
+def test_teams_theme_color_reflects_worst_severity():
+    # _source_report has a high finding worst-first, so themeColor is the
+    # high color (D13438), not the medium color.
+    data = json.loads(to_teams_webhook(_source_report()))
+    assert data["themeColor"] == "D13438"
+
+
+def test_teams_theme_color_critical_overrides_high():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.CRITICAL,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1"]),
+            ),
+            Finding(
+                category="c",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#2"]),
+            ),
+        ],
+    )
+    data = json.loads(to_teams_webhook(report))
+    assert data["themeColor"] == "A6192E"
+
+
+def test_teams_empty_report_uses_green_theme_color_and_emits_no_sections():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[],
+    )
+    data = json.loads(to_teams_webhook(report))
+    assert data["themeColor"] == "107C10"
+    assert data["sections"] == []
+    assert "no findings" in data["text"]
+    assert data["summary"] == "omen security scan: 0 findings"
+
+
+def test_teams_summary_text_carries_scan_metadata_and_severity_breakdown():
+    data = json.loads(to_teams_webhook(_source_report()))
+    text = data["text"]
+    assert "omen 0.1.0" in text
+    assert "Vuln.sol" in text
+    assert "(sol)" in text
+    assert "2 findings" in text
+    assert "high=1" in text
+    assert "medium=1" in text
+
+
+def test_teams_notification_summary_carries_finding_count():
+    data = json.loads(to_teams_webhook(_source_report()))
+    assert data["summary"] == "omen security scan: 2 findings"
+
+
+def test_teams_bytecode_finding_omits_location_fact():
+    data = json.loads(to_teams_webhook(_report()))
+    facts = {fact["name"]: fact["value"] for fact in data["sections"][0]["facts"]}
+    assert "Location" not in facts
+    # but still carries severity/category/contract/detector
+    assert facts["Severity"] == "high"
+    assert facts["Category"] == "suicidal"
+    assert facts["Contract"] == "0xabc"
+
+
+def test_teams_location_is_file_colon_line_for_ranged_mapping():
+    # _source_report's first finding uses Vuln.sol#12-18 — only the start
+    # line is reported (Teams facts list has no concept of a line range).
+    data = json.loads(to_teams_webhook(_source_report()))
+    facts = {fact["name"]: fact["value"] for fact in data["sections"][0]["facts"]}
+    assert facts["Location"] == "Vuln.sol:12"
+
+
+def test_teams_location_uses_file_only_when_mapping_has_no_hash():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol"]),
+            )
+        ],
+    )
+    data = json.loads(to_teams_webhook(report))
+    facts = {fact["name"]: fact["value"] for fact in data["sections"][0]["facts"]}
+    assert facts["Location"] == "V.sol"
+
+
+def test_teams_render_dispatch_matches_to_teams_webhook():
+    assert render(_source_report(), "teams-webhook") == to_teams_webhook(_source_report())
+
+
+def test_teams_payload_is_valid_json_object():
+    text = to_teams_webhook(_source_report())
+    data = json.loads(text)
+    assert isinstance(data, dict)
+    # The MessageCard schema requires these top-level fields on Incoming
+    # Webhook payloads; if any goes missing the Teams connector rejects the
+    # POST with a 400 (the failure mode this regression test guards).
+    for required in ("@type", "@context", "summary", "themeColor", "title", "text", "sections"):
+        assert required in data
+
+
+def test_teams_section_without_description_omits_text_field():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.HIGH,
+                title="t",
+                description="",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1"]),
+            )
+        ],
+    )
+    data = json.loads(to_teams_webhook(report))
+    section = data["sections"][0]
+    assert "text" not in section
+    # activityTitle still carries the index/severity/category/title tag
+    assert "[high/c]" in section["activityTitle"]
