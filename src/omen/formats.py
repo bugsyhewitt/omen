@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -46,6 +46,16 @@ vulnerabilities in the GitLab vulnerability management UI, with the native
 ``Critical``/``High``/``Medium``/``Low``/``Info`` severity and the SAST
 category that GitLab's merge-request approval rules can gate on. The audience
 the existing ``checkstyle`` GitLab path does not cover.
+format translation step. The bitbucket-code-insights format (POST_V01 R3.9)
+emits a Bitbucket `Code Insights <https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/>`_
+JSON document — Bitbucket Cloud's *native* code-review annotation schema, the
+Bitbucket-side complement to the GitHub-side gha/sarif paths. A single document
+carries a top-level ``report`` block (title/details/result/type/reporter) and an
+``annotations`` array (one annotation per finding, with file/line/severity/
+summary). Bitbucket Pipelines ingests this directly via the Code Insights REST
+API and renders each annotation inline on the PR-diff in the Bitbucket UI — the
+"surface omen findings inside a Bitbucket PR with no extra tooling" lever,
+parallel to what gha gives a GitHub PR and what checkstyle gives a GitLab MR.
 """
 
 from __future__ import annotations
@@ -1276,6 +1286,215 @@ def to_gitlab_sast(report: AnalysisReport, *, indent: int = 2) -> str:
     return json.dumps(document, indent=indent, sort_keys=False)
 
 
+# Bitbucket Code Insights (POST_V01 R3.9). Bitbucket Cloud's Code Insights API
+# defines exactly four annotation severity levels — LOW/MEDIUM/HIGH/CRITICAL —
+# which is one short of omen's five-level H1 taxonomy. The natural projection
+# folds ``informational`` into ``LOW`` (the same "this isn't really a bug but
+# you should know" bucket Bitbucket's UI renders with the green/info colour);
+# the other four levels map one-to-one. The original omen severity is
+# preserved verbatim inside the annotation's ``summary`` line so the projection
+# is not actively lossy in the UI a reviewer reads, even though the four-level
+# Bitbucket filter only exposes the projected level — the same approach the
+# checkstyle/gha formatters take when their target schemas have a coarser
+# severity vocabulary than omen's five levels.
+_SEVERITY_TO_BITBUCKET = {
+    Severity.CRITICAL: "CRITICAL",
+    Severity.HIGH: "HIGH",
+    Severity.MEDIUM: "MEDIUM",
+    Severity.LOW: "LOW",
+    Severity.INFORMATIONAL: "LOW",
+}
+
+# Bitbucket Code Insights defines exactly three annotation_type values:
+# BUG / VULNERABILITY / CODE_SMELL. Every omen finding is a smart-contract
+# security weakness, so VULNERABILITY is the right bucket across the board —
+# the same projection the sonarqube formatter uses for the analogous SonarQube
+# external-issue ``type`` field.
+_BITBUCKET_ANNOTATION_TYPE = "VULNERABILITY"
+
+# The Code Insights ``report.report_type`` enum is SECURITY/COVERAGE/TEST/BUG.
+# omen is a security scanner, so SECURITY is the only honest pick — it lights
+# up the Bitbucket UI's "Security" filter on the PR Insights tab.
+_BITBUCKET_REPORT_TYPE = "SECURITY"
+
+# A stable reporter label so a Bitbucket project's Code Insights UI groups
+# omen-emitted reports together regardless of which omen version produced
+# them. Kept short and version-free for the same reason _SONARQUBE_ENGINE_ID
+# is short and version-free.
+_BITBUCKET_REPORTER = "omen"
+
+
+def _bitbucket_annotation(f: Finding, idx: int) -> "dict | None":
+    """Build a single Bitbucket Code Insights annotation entry for a finding.
+
+    The Code Insights annotation schema requires ``external_id`` (a stable
+    per-annotation id the Code Insights API uses for upsert semantics),
+    ``annotation_type``, ``summary``, and either ``path``+``line`` (a
+    file-anchored annotation that renders inline on the PR diff) or no
+    location at all (a report-level note that appears under the report
+    header but not on any specific line). Bitbucket's strict requirement
+    for the inline-annotation form is *both* ``path`` and ``line``; a
+    finding with a source mapping but no line range cannot be rendered as
+    an inline annotation, and a bytecode-mode finding (no source mapping
+    at all) cannot be either — both fall back to the report-level form so
+    the finding still appears in the Code Insights UI rather than being
+    silently dropped, parallel to how the gha formatter degrades to a
+    ``file``-less command for bytecode findings.
+
+    ``external_id`` uses the finding's stable fingerprint when available so
+    repeated runs of omen on the same code upsert (not duplicate) the same
+    annotation; the ``idx`` argument is a fallback positional id used only
+    if the fingerprint is empty (e.g. a malformed finding), so every
+    annotation in a report has a guaranteed-unique ``external_id``.
+    """
+    fp = finding_fingerprint(f)
+    external_id = f"omen-{fp}" if fp else f"omen-{idx}"
+    summary_parts = [f"[{f.severity.value}/{f.category}]"]
+    if f.confidence:
+        summary_parts[0] = f"[{f.severity.value}/{f.category}/{f.confidence}]"
+    msg = f.description or f.title or ""
+    if msg:
+        summary_parts.append(msg)
+    summary = " ".join(summary_parts).strip()
+    annotation: dict = {
+        "external_id": external_id,
+        "annotation_type": _BITBUCKET_ANNOTATION_TYPE,
+        "summary": summary,
+        "severity": _SEVERITY_TO_BITBUCKET.get(f.severity, "MEDIUM"),
+    }
+    # Try to extract a path + line from the source mapping.
+    if f.evidence.source_mapping:
+        loc = f.evidence.source_mapping[0]
+        file_path = loc
+        line: int | None = None
+        if "#" in loc:
+            file_path, _, span = loc.partition("#")
+            start_s, _, _end_s = span.partition("-")
+            try:
+                line = int(start_s)
+            except ValueError:
+                line = None
+        if file_path and line is not None:
+            annotation["path"] = file_path
+            annotation["line"] = line
+    return annotation
+
+
+def to_bitbucket_code_insights(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as a Bitbucket Code Insights JSON document.
+
+    POST_V01 R3.9. One ``{"report": {...}, "annotations": [...]}`` JSON
+    document, one annotation per finding in the report's existing worst-first
+    order (the formatter never re-orders or re-filters — a pure formatter
+    over ``report.findings`` like every other format).
+
+    The output schema matches Bitbucket Cloud's `Code Insights
+    <https://developer.atlassian.com/cloud/bitbucket/rest/api-group-reports/>`_
+    REST API, which Bitbucket Pipelines ingests via
+    ``bitbucket-upload-code-insights`` (or the equivalent ``curl`` against
+    the ``/reports`` and ``/annotations`` endpoints). The single document
+    bundles both the report header and the annotation list so a Pipelines
+    step can submit the whole result with one upload.
+
+    The ``report`` block carries:
+
+      - ``title``: a short human-readable header ("omen security scan").
+      - ``details``: a one-line summary of what was scanned and the finding
+        count by severity, so a reviewer who opens the Code Insights tab
+        without clicking into individual annotations still gets the gist.
+      - ``report_type``: ``SECURITY`` (omen is a security scanner — the
+        only honest pick from Bitbucket's SECURITY/COVERAGE/TEST/BUG enum).
+      - ``reporter``: ``omen`` (stable, version-free, so reports group in
+        the Bitbucket UI regardless of which omen version produced them).
+      - ``result``: ``PASSED`` if the report has no findings, ``FAILED``
+        otherwise — the Bitbucket UI lights up the report row red/green
+        from this field, the at-a-glance signal a PR reviewer expects.
+      - ``data``: a structured per-severity finding-count breakdown
+        (``critical``/``high``/``medium``/``low``/``informational``) so the
+        Code Insights report row carries a quick numeric summary alongside
+        its pass/fail badge.
+
+    Each annotation carries:
+
+      - ``external_id``: ``omen-<fingerprint>`` (stable across runs, so
+        repeated submissions upsert the same annotation rather than
+        duplicating).
+      - ``annotation_type``: ``VULNERABILITY`` (every omen finding is a
+        smart-contract security weakness).
+      - ``severity``: one of ``CRITICAL``/``HIGH``/``MEDIUM``/``LOW``
+        (Bitbucket's four-level annotation vocabulary; omen's
+        ``informational`` folds into ``LOW``).
+      - ``summary``: a one-line ``[severity/category/confidence] description``
+        that preserves the original five-level severity verbatim alongside
+        the projected Bitbucket level.
+      - ``path`` + ``line``: when the finding has a source mapping with a
+        line number, so the annotation renders inline on the PR diff.
+
+    Unlike ``--format sarif`` (a SARIF 2.1.0 log uploaded to GitHub
+    Advanced Security) and ``--format checkstyle`` (a Checkstyle XML
+    document ingested by GitLab CI's Code Quality widget), ``--format
+    bitbucket-code-insights`` targets Bitbucket Cloud's *own* native
+    review-side schema directly — so omen findings appear as first-class
+    inline annotations on a Bitbucket PR with no format translation step
+    and no Atlassian-side custom importer.
+
+    Bytecode-mode findings (no source mapping) and findings whose source
+    mapping has no line number cannot be anchored to a PR-diff line and
+    are emitted as report-level annotations (no ``path``/``line``) rather
+    than dropped — they still appear in the Code Insights tab under the
+    report header so the reviewer is not silently denied visibility of
+    bytecode-mode findings, parallel to how the gha formatter degrades to
+    a ``file``-less command for the same case.
+    """
+    annotations: list[dict] = []
+    for i, f in enumerate(report.findings):
+        ann = _bitbucket_annotation(f, i)
+        if ann is not None:
+            annotations.append(ann)
+
+    # Per-severity breakdown for the report.data block. Use the same five
+    # H1 levels so the structured payload preserves omen's full taxonomy
+    # even though the per-annotation field is projected onto Bitbucket's
+    # four-level vocabulary.
+    counts: dict[str, int] = {sev.value: 0 for sev in SEVERITY_ORDER}
+    for f in report.findings:
+        counts[f.severity.value] = counts.get(f.severity.value, 0) + 1
+
+    shown = len(report.findings)
+    total = report.total_findings if report.total_findings is not None else shown
+    severity_summary = ", ".join(
+        f"{sev.value}={counts[sev.value]}" for sev in SEVERITY_ORDER if counts[sev.value]
+    )
+    if total > shown:
+        detail_findings = f"{shown} of {total} findings shown (--limit)"
+    else:
+        detail_findings = f"{shown} finding{'s' if shown != 1 else ''}"
+    details = (
+        f"omen {report.version} scanned {report.origin} ({report.input_type}); "
+        f"{detail_findings}"
+    )
+    if severity_summary:
+        details = f"{details} [{severity_summary}]"
+
+    report_block: dict = {
+        "title": "omen security scan",
+        "details": details,
+        "report_type": _BITBUCKET_REPORT_TYPE,
+        "reporter": _BITBUCKET_REPORTER,
+        "result": "FAILED" if shown > 0 else "PASSED",
+        "data": [
+            {"title": sev.value, "type": "NUMBER", "value": counts[sev.value]}
+            for sev in SEVERITY_ORDER
+        ],
+    }
+
+    document = {
+        "report": report_block,
+        "annotations": annotations,
+    }
+    return json.dumps(document, indent=indent, sort_keys=False)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -1307,4 +1526,6 @@ def render(
         return to_sonarqube(report)
     if fmt == "gitlab-sast":
         return to_gitlab_sast(report)
+    if fmt == "bitbucket-code-insights":
+        return to_bitbucket_code_insights(report)
     raise ValueError(f"unknown output format: {fmt}")

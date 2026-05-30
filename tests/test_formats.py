@@ -9,6 +9,7 @@ from omen.analyzer import AnalysisReport
 from omen.findings import Evidence, Finding, Severity
 from omen.formats import (
     render,
+    to_bitbucket_code_insights,
     to_checkstyle,
     to_gha,
     to_gitlab_sast,
@@ -70,6 +71,7 @@ def test_render_dispatch():
     assert render(_report(), "checkstyle").lstrip().startswith("<?xml")
     assert render(_report(), "sonarqube").startswith("{")
     assert render(_report(), "gitlab-sast").startswith("{")
+    assert render(_report(), "bitbucket-code-insights").startswith("{")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -1433,3 +1435,288 @@ def test_gitlab_sast_description_falls_back_to_title_when_empty():
 
 def test_gitlab_sast_render_dispatch_matches_to_gitlab_sast():
     assert render(_source_report(), "gitlab-sast") == to_gitlab_sast(_source_report())
+# --- bitbucket-code-insights format (POST_V01 R3.9) -----------------------
+
+
+def test_bitbucket_is_valid_json_with_report_and_annotations():
+    data = json.loads(to_bitbucket_code_insights(_source_report()))
+    assert isinstance(data, dict)
+    assert isinstance(data["report"], dict)
+    assert isinstance(data["annotations"], list)
+    assert len(data["annotations"]) == 2
+
+
+def test_bitbucket_report_block_carries_required_fields():
+    report_block = json.loads(to_bitbucket_code_insights(_source_report()))["report"]
+    # The Bitbucket Code Insights /reports endpoint requires title and reporter,
+    # and renders report_type + result as filters/badges on the PR UI.
+    assert report_block["title"] == "omen security scan"
+    assert report_block["reporter"] == "omen"
+    assert report_block["report_type"] == "SECURITY"
+    assert report_block["result"] == "FAILED"
+    assert "details" in report_block and report_block["details"]
+
+
+def test_bitbucket_empty_report_result_is_passed():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["all"],
+        findings=[],
+    )
+    data = json.loads(to_bitbucket_code_insights(report))
+    assert data["report"]["result"] == "PASSED"
+    assert data["annotations"] == []
+
+
+def test_bitbucket_report_data_carries_per_severity_counts():
+    # _source_report() has access-control (high) and tx-origin (medium).
+    data = json.loads(to_bitbucket_code_insights(_source_report()))["report"]["data"]
+    # data is a list of {title, type, value} entries — one per H1 severity.
+    by_title = {row["title"]: row["value"] for row in data}
+    assert by_title["high"] == 1
+    assert by_title["medium"] == 1
+    assert by_title["critical"] == 0
+    assert by_title["low"] == 0
+    assert by_title["informational"] == 0
+    assert all(row["type"] == "NUMBER" for row in data)
+
+
+def test_bitbucket_one_annotation_per_finding_in_report_order():
+    anns = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    # _source_report() emits high then medium; both should be present in order.
+    assert anns[0]["severity"] == "HIGH"
+    assert anns[1]["severity"] == "MEDIUM"
+
+
+def test_bitbucket_severity_maps_h1_to_bitbucket_four_levels():
+    # critical -> CRITICAL, high -> HIGH, medium -> MEDIUM, low -> LOW,
+    # informational -> LOW (folds into the lowest Bitbucket level).
+    findings: list[Finding] = []
+    for sev in (
+        Severity.CRITICAL,
+        Severity.HIGH,
+        Severity.MEDIUM,
+        Severity.LOW,
+        Severity.INFORMATIONAL,
+    ):
+        findings.append(
+            Finding(
+                category="suicidal",
+                severity=sev,
+                title=f"t-{sev.value}",
+                description=f"d-{sev.value}",
+                detector=f"slither:{sev.value}",
+                contract="Vuln",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Vuln.sol#1-2"]),
+            )
+        )
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Vuln.sol",
+        checks=["suicidal"],
+        findings=findings,
+    )
+    severities = [
+        a["severity"]
+        for a in json.loads(to_bitbucket_code_insights(report))["annotations"]
+    ]
+    assert severities == ["CRITICAL", "HIGH", "MEDIUM", "LOW", "LOW"]
+
+
+def test_bitbucket_annotation_type_is_vulnerability_for_every_annotation():
+    anns = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    assert all(a["annotation_type"] == "VULNERABILITY" for a in anns)
+
+
+def test_bitbucket_source_finding_carries_path_and_line():
+    # access-control source mapping in _source_report() is Vuln.sol#12-18,
+    # so the annotation must carry path=Vuln.sol and line=12 (start line).
+    anns = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    ac = next(a for a in anns if a["severity"] == "HIGH")
+    assert ac["path"] == "Vuln.sol"
+    assert ac["line"] == 12
+
+
+def test_bitbucket_single_line_mapping_carries_that_line():
+    # tx-origin source mapping is Vuln.sol#25 — single-line location, the
+    # annotation's line should be exactly 25.
+    anns = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    tx = next(a for a in anns if a["severity"] == "MEDIUM")
+    assert tx["path"] == "Vuln.sol"
+    assert tx["line"] == 25
+
+
+def test_bitbucket_bytecode_finding_has_no_path_or_line():
+    # Bytecode finding (no source_mapping) -> Bitbucket cannot anchor it to
+    # a PR-diff line, but the annotation is still emitted as a report-level
+    # entry so the finding is visible in the Code Insights tab.
+    anns = json.loads(to_bitbucket_code_insights(_report()))["annotations"]
+    assert len(anns) == 1
+    assert "path" not in anns[0]
+    assert "line" not in anns[0]
+    # But the annotation_type, severity, and summary must still be present.
+    assert anns[0]["annotation_type"] == "VULNERABILITY"
+    assert anns[0]["severity"] == "HIGH"
+    assert anns[0]["summary"]
+
+
+def test_bitbucket_external_id_is_stable_across_runs():
+    # Two renders of the same report must produce identical external_ids per
+    # annotation (the Code Insights API uses external_id for upsert).
+    a1 = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    a2 = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    ids1 = [a["external_id"] for a in a1]
+    ids2 = [a["external_id"] for a in a2]
+    assert ids1 == ids2
+    # All external_ids should be unique within a single report.
+    assert len(set(ids1)) == len(ids1)
+    # And they should be prefixed with "omen-" for grouping in the Bitbucket UI.
+    assert all(eid.startswith("omen-") for eid in ids1)
+
+
+def test_bitbucket_summary_preserves_original_h1_severity_verbatim():
+    # The annotation's projected severity is Bitbucket's four-level vocabulary,
+    # but the summary line must carry omen's original H1 severity verbatim so
+    # the reviewer still sees informational vs low (both project to LOW).
+    findings = [
+        Finding(
+            category="suicidal",
+            severity=Severity.INFORMATIONAL,
+            title="info",
+            description="info-finding",
+            detector="slither:suicidal",
+            contract="V",
+            confidence="medium",
+            evidence=Evidence(source_mapping=["V.sol#1-2"]),
+        ),
+        Finding(
+            category="suicidal",
+            severity=Severity.LOW,
+            title="low",
+            description="low-finding",
+            detector="slither:suicidal",
+            contract="V",
+            confidence="high",
+            evidence=Evidence(source_mapping=["V.sol#3-4"]),
+        ),
+    ]
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=findings,
+    )
+    anns = json.loads(to_bitbucket_code_insights(report))["annotations"]
+    # Both project to LOW but their summaries must disambiguate.
+    assert all(a["severity"] == "LOW" for a in anns)
+    assert "informational" in anns[0]["summary"]
+    assert "low" in anns[1]["summary"] and "informational" not in anns[1]["summary"]
+
+
+def test_bitbucket_summary_falls_back_to_title_when_description_empty():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="title-fallback",
+                description="",
+                detector="slither:suicidal",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+        ],
+    )
+    anns = json.loads(to_bitbucket_code_insights(report))["annotations"]
+    assert "title-fallback" in anns[0]["summary"]
+
+
+def test_bitbucket_source_mapping_without_hash_emits_no_line_anchor():
+    # A source mapping that is just a bare path (no #range) lacks a line
+    # number — Bitbucket requires BOTH path and line for an inline anchor,
+    # so it falls back to the report-level annotation form.
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:suicidal",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol"]),
+            ),
+        ],
+    )
+    anns = json.loads(to_bitbucket_code_insights(report))["annotations"]
+    assert "path" not in anns[0]
+    assert "line" not in anns[0]
+
+
+def test_bitbucket_details_reports_limit_truncation_like_h1md():
+    # When --limit truncated the report, the details line must convey "N of M".
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["suicidal"],
+        findings=[
+            Finding(
+                category="suicidal",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="slither:suicidal",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1-2"]),
+            ),
+        ],
+        total_findings=10,
+    )
+    details = json.loads(to_bitbucket_code_insights(report))["report"]["details"]
+    assert "1 of 10" in details
+    assert "--limit" in details
+
+
+def test_bitbucket_annotation_schema_keys_are_within_expected_set():
+    anns = json.loads(to_bitbucket_code_insights(_source_report()))["annotations"]
+    allowed = {
+        "external_id",
+        "annotation_type",
+        "summary",
+        "severity",
+        "path",
+        "line",
+    }
+    for a in anns:
+        assert set(a.keys()).issubset(allowed)
+        # Required keys (always present) regardless of source/bytecode mode.
+        assert {"external_id", "annotation_type", "summary", "severity"}.issubset(a.keys())
+
+
+def test_bitbucket_render_dispatch_matches_to_bitbucket_code_insights():
+    assert render(_source_report(), "bitbucket-code-insights") == to_bitbucket_code_insights(
+        _source_report()
+    )
