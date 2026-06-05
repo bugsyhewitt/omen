@@ -1,4 +1,4 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops, teams-webhook.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops, teams-webhook, opsgenie.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -1824,6 +1824,172 @@ def to_teams_webhook(report: AnalysisReport, *, indent: int = 2) -> str:
     return json.dumps(document, indent=indent, sort_keys=False)
 
 
+# --- Opsgenie Create Alert format (POST_V01 R3.12) --------------------------
+#
+# The Opsgenie / Atlassian Ops `Create Alert API
+# <https://docs.opsgenie.com/docs/alert-api#create-alert>`_ accepts one JSON
+# document per POST to ``https://api.opsgenie.com/v2/alerts``. omen emits one
+# alert per scan: the worst severity present drives the ``priority`` field
+# (P1..P5), every finding is a tagged ``tag`` entry, the full finding list
+# becomes the ``description`` (markdown), and the ``details`` map carries the
+# per-scan summary (tool, version, origin, check count, finding count). A scan
+# that found nothing still emits a P5-informational "no findings" alert so the
+# on-call integration gets a visible "omen ran, found nothing" trace rather
+# than silent empty output, parallel to the gha/azure-devops/teams-webhook
+# formatters' graceful-empty-report behaviour.
+
+_SEVERITY_TO_OPSGENIE_PRIORITY = {
+    Severity.CRITICAL: "P1",
+    Severity.HIGH: "P2",
+    Severity.MEDIUM: "P3",
+    Severity.LOW: "P4",
+    Severity.INFORMATIONAL: "P5",
+}
+
+_OPSGENIE_NO_FINDINGS_PRIORITY = "P5"
+
+
+def _opsgenie_priority(report: AnalysisReport) -> str:
+    """Return the Opsgenie priority string for the worst finding in *report*.
+
+    Opsgenie priorities P1..P5 map directly onto omen's five severity levels:
+    critical→P1, high→P2, medium→P3, low→P4, informational→P5.  An empty
+    report (no findings) maps to P5 — the lowest priority, matching the "no
+    findings" graceful-empty treatment all other formatters use.
+    """
+    if not report.findings:
+        return _OPSGENIE_NO_FINDINGS_PRIORITY
+    worst = max(report.findings, key=lambda f: severity_rank(f.severity))
+    return _SEVERITY_TO_OPSGENIE_PRIORITY.get(
+        worst.severity, _SEVERITY_TO_OPSGENIE_PRIORITY[Severity.MEDIUM]
+    )
+
+
+def _opsgenie_description(report: AnalysisReport) -> str:
+    """Build the Opsgenie alert description as a markdown finding list.
+
+    The description carries the full scan context — tool, version, origin —
+    followed by one section per finding (index, severity/category heading,
+    per-finding metadata as a definition list, and the finding's description
+    body). Empty-report descriptions say "No findings" so the alert body is
+    never blank.
+
+    The description is plain markdown — the same subset the h1md and
+    teams-webhook formatters use — because Opsgenie's alert detail view renders
+    markdown in the description field.
+    """
+    lines: list[str] = []
+    lines.append(
+        f"**omen {report.version}** scanned `{report.origin}` "
+        f"(`{report.input_type}`) — "
+        f"{len(report.findings)} finding{'s' if len(report.findings) != 1 else ''}"
+    )
+    lines.append("")
+
+    if not report.findings:
+        lines.append("No findings.")
+        return "\n".join(lines)
+
+    for i, f in enumerate(report.findings, 1):
+        title = f.title or f.category
+        lines.append(f"### #{i}. [{f.severity.value}/{f.category}] {title}")
+        lines.append("")
+        lines.append(f"- **Severity:** {f.severity.value}")
+        lines.append(f"- **Category:** {f.category}")
+        if f.confidence:
+            lines.append(f"- **Confidence:** {f.confidence}")
+        if f.contract:
+            lines.append(f"- **Contract:** {f.contract}")
+        if f.detector:
+            lines.append(f"- **Detector:** {f.detector}")
+        if f.evidence.source_mapping:
+            loc = f.evidence.source_mapping[0]
+            lines.append(f"- **Location:** {loc}")
+        if f.description:
+            lines.append("")
+            lines.append(f.description)
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def to_opsgenie(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as an Opsgenie Create Alert API payload.
+
+    POST_V01 R3.12. One JSON document matching the `Opsgenie Create Alert API
+    <https://docs.opsgenie.com/docs/alert-api#create-alert>`_ schema, ready to
+    POST to ``https://api.opsgenie.com/v2/alerts`` (or
+    ``https://api.eu.opsgenie.com/v2/alerts`` for EU instances) with a single
+    ``curl -d @-`` invocation and an ``Authorization: GenieKey <API_KEY>``
+    header.
+
+    The alert carries:
+
+    - ``message``: a short headline ("omen security scan: N findings") — the
+      string Opsgenie uses for notification subjects and the alert-list
+      preview. Capped at 130 characters (the Opsgenie API limit).
+    - ``alias``: a stable deduplication key (``omen/<origin>/<input_type>``)
+      so re-running the same scan does not create duplicate open alerts —
+      Opsgenie's ``alias``-based dedup closes the existing alert and replaces
+      it with the latest scan result.
+    - ``description``: a markdown body carrying the full scan context and one
+      section per finding (rendered by ``_opsgenie_description``).
+    - ``priority``: P1..P5 projected from the *worst* severity in the report
+      — critical→P1, high→P2, medium→P3, low→P4, informational→P5 — so the
+      on-call rotation gets paged appropriately without manual triage.
+    - ``tags``: one tag per finding category present in the report
+      (``omen:<category>``) so Opsgenie's tag-based routing rules and alert
+      policies can dispatch category-specific on-call escalations.
+    - ``details``: a string→string metadata map carrying ``tool``, ``version``,
+      ``origin``, ``input_type``, ``checks``, and ``finding_count`` — the same
+      machine-readable summary the JSON format's top-level fields carry,
+      surfaced as Opsgenie alert details for integration-level filtering and
+      webhook forwarding.
+
+    Unlike ``--format teams-webhook`` (Microsoft Teams channel card) and
+    ``--format azure-devops`` (Azure Pipelines build annotations),
+    ``--format opsgenie`` targets Opsgenie's (Atlassian Ops's) on-call
+    alerting API directly — the CI step pipes the rendered JSON straight to
+    the API endpoint and the scan result becomes a trackable, routable,
+    acknowledgeable alert in the on-call platform's queue.
+
+    An empty report still emits a P5-priority "no findings" alert so the
+    on-call integration gets a visible "omen ran, found nothing" trace rather
+    than silent empty output.
+    """
+    message = f"omen security scan: {len(report.findings)} finding{'s' if len(report.findings) != 1 else ''}"
+    if not report.findings:
+        message = "omen security scan: no findings"
+    # Opsgenie API hard limit: message ≤ 130 chars.
+    message = message[:130]
+
+    alias = f"omen/{report.origin}/{report.input_type}"
+
+    categories = sorted({f.category for f in report.findings})
+    tags = [f"omen:{cat}" for cat in categories]
+    if not tags:
+        tags = ["omen:clean"]
+
+    details: dict[str, str] = {
+        "tool": "omen",
+        "version": report.version,
+        "origin": report.origin,
+        "input_type": report.input_type,
+        "checks": ",".join(report.checks),
+        "finding_count": str(len(report.findings)),
+    }
+
+    document: dict = {
+        "message": message,
+        "alias": alias,
+        "description": _opsgenie_description(report),
+        "priority": _opsgenie_priority(report),
+        "tags": tags,
+        "details": details,
+    }
+    return json.dumps(document, indent=indent, sort_keys=False)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -1861,4 +2027,6 @@ def render(
         return to_azure_devops(report)
     if fmt == "teams-webhook":
         return to_teams_webhook(report)
+    if fmt == "opsgenie":
+        return to_opsgenie(report)
     raise ValueError(f"unknown output format: {fmt}")
