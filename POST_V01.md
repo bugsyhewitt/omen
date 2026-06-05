@@ -1885,3 +1885,27 @@ land.
 > example and a scan-result-policy MR approval gate note) plus
 > usage-block and flag-list mentions.
 
+### R3.13. `--format victorops` VictorOps / Splunk On-Call REST endpoint JSON
+
+**Rank: 1 (Rotation 37) — on-call alert format for VictorOps / Splunk On-Call**
+
+> **STATUS: ✅ IMPLEMENTED (R37, 2026-06-05).** `omen … --format victorops`
+> renders a scan as a VictorOps / Splunk On-Call REST endpoint payload —
+> one JSON document ready to POST to a routing-key URL
+> (`https://alert.victorops.com/integrations/generic/…/alert/<ROUTING_KEY>`)
+> with `Content-Type: application/json`. The `message_type` is CRITICAL
+> (worst severity critical or high — pages the on-call rotation), WARNING
+> (medium), INFO (low or informational), or RECOVERY (empty report — resolves
+> any open alert for the same `entity_id`, so a clean re-scan auto-closes the
+> on-call queue entry). The `entity_id` (`omen/<origin>/<input_type>`) is a
+> stable deduplication key; VictorOps correlates on it to update an existing
+> incident rather than opening a flood of new ones. `entity_display_name`
+> carries a short headline; `state_message` carries the full numbered finding
+> summary as plain text (capped at 20 KB); `monitoring_tool` is `"omen"`.
+> Tests: 17 new in `tests/test_formats.py` (required-keys envelope, all
+> five severity levels → message_type, RECOVERY for empty report, entity_id
+> encoding, display-name finding count singular/plural, state_message content,
+> valid JSON, render dispatch) plus one assertion in `test_cli_help.py`.
+> Full suite: 721 passing (704 baseline + 17 new), 26 skipped unchanged.
+> README updated with a VictorOps section.
+

@@ -22,6 +22,7 @@ from omen.formats import (
     to_sonarqube,
     to_teams_webhook,
     to_text,
+    to_victorops,
 )
 
 
@@ -78,6 +79,7 @@ def test_render_dispatch():
     assert render(_report(), "azure-devops").startswith("##vso[")
     assert render(_report(), "teams-webhook").startswith("{")
     assert render(_report(), "opsgenie").startswith("{")
+    assert render(_report(), "victorops").startswith("{")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -2274,3 +2276,220 @@ def test_opsgenie_empty_report_no_findings_message():
 
 def test_opsgenie_render_dispatch_matches_to_opsgenie():
     assert render(_source_report(), "opsgenie") == to_opsgenie(_source_report())
+
+
+# --- victorops format (POST_V01 R3.13) ---------------------------------------
+
+
+def test_victorops_envelope_has_required_keys():
+    data = json.loads(to_victorops(_source_report()))
+    assert set(data.keys()) == {
+        "message_type",
+        "entity_id",
+        "entity_display_name",
+        "state_message",
+        "monitoring_tool",
+    }
+
+
+def test_victorops_monitoring_tool_is_omen():
+    data = json.loads(to_victorops(_source_report()))
+    assert data["monitoring_tool"] == "omen"
+
+
+def test_victorops_message_type_critical_for_high_severity():
+    """worst severity=high → CRITICAL (pages on-call rotation)."""
+    data = json.loads(to_victorops(_source_report()))
+    assert data["message_type"] == "CRITICAL"
+
+
+def test_victorops_message_type_critical_for_critical_severity():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Critical.sol",
+        checks=["reentrancy"],
+        findings=[
+            Finding(
+                category="reentrancy",
+                severity=Severity.CRITICAL,
+                title="reentrancy",
+                description="re-entrant call",
+                detector="slither:reentrancy-eth",
+                contract="C",
+                confidence="high",
+                evidence=Evidence(source_mapping=["Critical.sol#5"]),
+            )
+        ],
+    )
+    data = json.loads(to_victorops(report))
+    assert data["message_type"] == "CRITICAL"
+
+
+def test_victorops_message_type_warning_for_medium_severity():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Med.sol",
+        checks=["tx-origin"],
+        findings=[
+            Finding(
+                category="tx-origin",
+                severity=Severity.MEDIUM,
+                title="tx.origin",
+                description="tx.origin auth",
+                detector="slither:tx-origin",
+                contract="C",
+                confidence="medium",
+                evidence=Evidence(source_mapping=["Med.sol#3"]),
+            )
+        ],
+    )
+    data = json.loads(to_victorops(report))
+    assert data["message_type"] == "WARNING"
+
+
+def test_victorops_message_type_info_for_low_severity():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Low.sol",
+        checks=["integer-overflow"],
+        findings=[
+            Finding(
+                category="integer-overflow",
+                severity=Severity.LOW,
+                title="overflow",
+                description="",
+                detector="",
+                contract="C",
+                confidence="medium",
+                evidence=Evidence(),
+            )
+        ],
+    )
+    data = json.loads(to_victorops(report))
+    assert data["message_type"] == "INFO"
+
+
+def test_victorops_message_type_info_for_informational_severity():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Info.sol",
+        checks=["integer-overflow"],
+        findings=[
+            Finding(
+                category="integer-overflow",
+                severity=Severity.INFORMATIONAL,
+                title="note",
+                description="",
+                detector="",
+                contract="C",
+                confidence="low",
+                evidence=Evidence(),
+            )
+        ],
+    )
+    data = json.loads(to_victorops(report))
+    assert data["message_type"] == "INFO"
+
+
+def test_victorops_message_type_recovery_for_empty_report():
+    """An empty report → RECOVERY so a clean re-scan auto-resolves the
+    open VictorOps alert — the correct on-call lifecycle behaviour."""
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["access-control"],
+        findings=[],
+    )
+    data = json.loads(to_victorops(report))
+    assert data["message_type"] == "RECOVERY"
+
+
+def test_victorops_entity_id_encodes_origin_and_input_type():
+    data = json.loads(to_victorops(_source_report()))
+    assert data["entity_id"] == "omen/Vuln.sol/sol"
+
+
+def test_victorops_entity_display_name_carries_finding_count():
+    data = json.loads(to_victorops(_source_report()))
+    assert "2" in data["entity_display_name"]
+    assert "Vuln.sol" in data["entity_display_name"]
+
+
+def test_victorops_entity_display_name_singular_for_one_finding():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="One.sol",
+        checks=["access-control"],
+        findings=[
+            Finding(
+                category="access-control",
+                severity=Severity.HIGH,
+                title="one finding",
+                description="",
+                detector="",
+                contract="C",
+                confidence="high",
+                evidence=Evidence(),
+            )
+        ],
+    )
+    data = json.loads(to_victorops(report))
+    assert "1 finding" in data["entity_display_name"]
+    # singular — no trailing 's'
+    assert "1 findings" not in data["entity_display_name"]
+
+
+def test_victorops_state_message_contains_each_finding():
+    data = json.loads(to_victorops(_source_report()))
+    msg = data["state_message"]
+    assert "access-control" in msg
+    assert "tx-origin" in msg
+
+
+def test_victorops_state_message_contains_severity():
+    data = json.loads(to_victorops(_source_report()))
+    msg = data["state_message"]
+    assert "high" in msg
+    assert "medium" in msg
+
+
+def test_victorops_state_message_contains_location():
+    data = json.loads(to_victorops(_source_report()))
+    msg = data["state_message"]
+    # Source mapping locations appear in state_message.
+    assert "Vuln.sol#12-18" in msg
+
+
+def test_victorops_state_message_no_findings():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="Clean.sol",
+        checks=["access-control"],
+        findings=[],
+    )
+    data = json.loads(to_victorops(report))
+    assert "No findings" in data["state_message"]
+
+
+def test_victorops_is_valid_json():
+    raw = to_victorops(_source_report())
+    data = json.loads(raw)
+    assert isinstance(data, dict)
+
+
+def test_victorops_render_dispatch_matches_to_victorops():
+    assert render(_source_report(), "victorops") == to_victorops(_source_report())
