@@ -17,6 +17,7 @@ from omen.formats import (
     to_h1md,
     to_json,
     to_junit,
+    to_opsgenie,
     to_sarif,
     to_sonarqube,
     to_teams_webhook,
@@ -76,6 +77,7 @@ def test_render_dispatch():
     assert render(_report(), "bitbucket-code-insights").startswith("{")
     assert render(_report(), "azure-devops").startswith("##vso[")
     assert render(_report(), "teams-webhook").startswith("{")
+    assert render(_report(), "opsgenie").startswith("{")
 
 
 # --- text format (POST_V01 Rotation 2, R2.6) ------------------------------
@@ -2094,3 +2096,181 @@ def test_teams_section_without_description_omits_text_field():
     assert "text" not in section
     # activityTitle still carries the index/severity/category/title tag
     assert "[high/c]" in section["activityTitle"]
+
+
+# --- opsgenie format (POST_V01 R3.12) ----------------------------------------
+
+
+def test_opsgenie_envelope_has_required_keys():
+    data = json.loads(to_opsgenie(_source_report()))
+    assert "message" in data
+    assert "alias" in data
+    assert "description" in data
+    assert "priority" in data
+    assert "tags" in data and isinstance(data["tags"], list)
+    assert "details" in data and isinstance(data["details"], dict)
+
+
+def test_opsgenie_priority_reflects_worst_severity():
+    # _source_report has high as worst → P2
+    data = json.loads(to_opsgenie(_source_report()))
+    assert data["priority"] == "P2"
+
+
+def test_opsgenie_priority_critical_is_p1():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.CRITICAL,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1"]),
+            ),
+        ],
+    )
+    data = json.loads(to_opsgenie(report))
+    assert data["priority"] == "P1"
+
+
+def test_opsgenie_priority_mapping_all_levels():
+    for severity, expected in [
+        (Severity.CRITICAL, "P1"),
+        (Severity.HIGH, "P2"),
+        (Severity.MEDIUM, "P3"),
+        (Severity.LOW, "P4"),
+        (Severity.INFORMATIONAL, "P5"),
+    ]:
+        report = AnalysisReport(
+            tool="omen",
+            version="0.1.0",
+            input_type="sol",
+            origin="V.sol",
+            checks=["c"],
+            findings=[
+                Finding(
+                    category="c",
+                    severity=severity,
+                    title="t",
+                    description="d",
+                    detector="x",
+                    contract="V",
+                    confidence="high",
+                    evidence=Evidence(source_mapping=["V.sol#1"]),
+                ),
+            ],
+        )
+        data = json.loads(to_opsgenie(report))
+        assert data["priority"] == expected, f"severity {severity} → {data['priority']} != {expected}"
+
+
+def test_opsgenie_message_carries_finding_count():
+    data = json.loads(to_opsgenie(_source_report()))
+    assert "2 findings" in data["message"]
+
+
+def test_opsgenie_message_singular_for_one_finding():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[
+            Finding(
+                category="c",
+                severity=Severity.HIGH,
+                title="t",
+                description="d",
+                detector="x",
+                contract="V",
+                confidence="high",
+                evidence=Evidence(source_mapping=["V.sol#1"]),
+            ),
+        ],
+    )
+    data = json.loads(to_opsgenie(report))
+    assert "1 finding" in data["message"]
+    assert "findings" not in data["message"]
+
+
+def test_opsgenie_message_capped_at_130_chars():
+    # message must never exceed 130 chars (Opsgenie API hard limit)
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V" * 200,
+        checks=["c"],
+        findings=[],
+    )
+    data = json.loads(to_opsgenie(report))
+    assert len(data["message"]) <= 130
+
+
+def test_opsgenie_alias_encodes_origin_and_input_type():
+    data = json.loads(to_opsgenie(_source_report()))
+    assert "Vuln.sol" in data["alias"]
+    assert "sol" in data["alias"]
+
+
+def test_opsgenie_tags_include_finding_categories():
+    data = json.loads(to_opsgenie(_source_report()))
+    tags = data["tags"]
+    assert "omen:access-control" in tags
+    assert "omen:tx-origin" in tags
+
+
+def test_opsgenie_description_contains_each_finding():
+    data = json.loads(to_opsgenie(_source_report()))
+    desc = data["description"]
+    assert "access-control" in desc
+    assert "tx-origin" in desc
+    assert "#1." in desc
+    assert "#2." in desc
+
+
+def test_opsgenie_description_contains_finding_metadata():
+    data = json.loads(to_opsgenie(_source_report()))
+    desc = data["description"]
+    # severity, category, confidence, contract, detector, location all present
+    assert "high" in desc
+    assert "Vuln" in desc
+    assert "slither:protected-vars" in desc
+
+
+def test_opsgenie_details_carry_scan_metadata():
+    data = json.loads(to_opsgenie(_source_report()))
+    details = data["details"]
+    assert details["tool"] == "omen"
+    assert details["origin"] == "Vuln.sol"
+    assert details["input_type"] == "sol"
+    assert details["finding_count"] == "2"
+
+
+def test_opsgenie_empty_report_no_findings_message():
+    report = AnalysisReport(
+        tool="omen",
+        version="0.1.0",
+        input_type="sol",
+        origin="V.sol",
+        checks=["c"],
+        findings=[],
+    )
+    data = json.loads(to_opsgenie(report))
+    assert "no findings" in data["message"]
+    assert data["priority"] == "P5"
+    assert data["tags"] == ["omen:clean"]
+    assert "No findings" in data["description"]
+
+
+def test_opsgenie_render_dispatch_matches_to_opsgenie():
+    assert render(_source_report(), "opsgenie") == to_opsgenie(_source_report())

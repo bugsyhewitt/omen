@@ -59,6 +59,8 @@ def test_help_lists_format_choices():
     assert "azure-devops" in text
     # teams-webhook format (POST_V01 R3.11): Microsoft Teams Incoming Webhook MessageCard.
     assert "teams-webhook" in text
+    # opsgenie format (POST_V01 R3.12): Opsgenie Create Alert API JSON.
+    assert "opsgenie" in text
 
 
 def test_text_format_scan_runs_end_to_end():
@@ -358,6 +360,42 @@ def test_teams_webhook_format_scan_runs_end_to_end():
     assert data["title"] == "omen security scan"
     assert "themeColor" in data
     assert isinstance(data["sections"], list)
+
+
+def test_opsgenie_format_scan_runs_end_to_end():
+    # Bytecode mode needs no compiler, so --format opsgenie is exercisable in
+    # CI on a fresh checkout. The output must be a single valid JSON Opsgenie
+    # Create Alert API payload.
+    from pathlib import Path
+    import json as _json
+
+    fixtures = Path(__file__).parent / "fixtures"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "omen.cli",
+            "--contract",
+            str(fixtures / "compiled.bin"),
+            "--input-type",
+            "bytecode",
+            "--check",
+            "suicidal",
+            "--format",
+            "opsgenie",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = proc.stdout
+    data = _json.loads(out)
+    assert "message" in data
+    assert "alias" in data
+    assert "description" in data
+    assert "priority" in data
+    assert isinstance(data["tags"], list)
+    assert isinstance(data["details"], dict)
 
 
 def test_cli_help_runs_as_subprocess():

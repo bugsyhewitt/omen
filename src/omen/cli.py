@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops,teams-webhook}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops,teams-webhook,opsgenie}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -330,6 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
             "bitbucket-code-insights",
             "azure-devops",
             "teams-webhook",
+            "opsgenie",
         ],
         help=(
             "output format. For a scan: json (default), text (a compact "
@@ -378,7 +379,13 @@ def build_parser() -> argparse.ArgumentParser:
             "severity in the report, piped straight to a Teams channel's "
             "Incoming Webhook URL with one curl -d @- with no Power Automate "
             "flow, no Azure Bot registration, and no Marketplace extension; "
-            "POST_V01 R3.11). For --list-checks: text "
+            "POST_V01 R3.11), or opsgenie (Opsgenie / Atlassian Ops Create "
+            "Alert API JSON — one alert document with priority P1..P5 "
+            "projected from the worst severity in the report, a markdown "
+            "description carrying all findings, per-category tags for "
+            "Opsgenie routing rules, and a details map with scan metadata; "
+            "POST to https://api.opsgenie.com/v2/alerts with an Authorization: "
+            "GenieKey header; POST_V01 R3.12). For --list-checks: text "
             "(default) or json."
         ),
     )
