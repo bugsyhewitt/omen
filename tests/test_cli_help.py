@@ -61,6 +61,8 @@ def test_help_lists_format_choices():
     assert "teams-webhook" in text
     # opsgenie format (POST_V01 R3.12): Opsgenie Create Alert API JSON.
     assert "opsgenie" in text
+    # victorops format (POST_V01 R3.13): VictorOps / Splunk On-Call REST endpoint JSON.
+    assert "victorops" in text
 
 
 def test_text_format_scan_runs_end_to_end():

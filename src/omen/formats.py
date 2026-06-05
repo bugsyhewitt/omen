@@ -1990,6 +1990,139 @@ def to_opsgenie(report: AnalysisReport, *, indent: int = 2) -> str:
     return json.dumps(document, indent=indent, sort_keys=False)
 
 
+# ---------------------------------------------------------------------------
+# VictorOps / Splunk On-Call REST endpoint (POST_V01 R3.13)
+# ---------------------------------------------------------------------------
+
+_SEVERITY_TO_VICTOROPS_MESSAGE_TYPE: dict[Severity, str] = {
+    Severity.CRITICAL: "CRITICAL",
+    Severity.HIGH: "CRITICAL",
+    Severity.MEDIUM: "WARNING",
+    Severity.LOW: "INFO",
+    Severity.INFORMATIONAL: "INFO",
+}
+
+
+def _victorops_message_type(report: AnalysisReport) -> str:
+    """Return the VictorOps ``message_type`` for the worst finding in *report*.
+
+    VictorOps CRITICAL pages the on-call rotation; WARNING creates an alert;
+    INFO is informational. An empty report returns ``RECOVERY`` — the
+    VictorOps signal that the monitored entity has returned to a healthy
+    state, which resolves any previously open alert for the same
+    ``entity_id``. Using RECOVERY for a clean scan means re-running omen and
+    finding no issues automatically clears the on-call alert, the correct
+    lifecycle behaviour.
+    """
+    if not report.findings:
+        return "RECOVERY"
+    worst = max(report.findings, key=lambda f: severity_rank(f.severity))
+    return _SEVERITY_TO_VICTOROPS_MESSAGE_TYPE.get(
+        worst.severity, _SEVERITY_TO_VICTOROPS_MESSAGE_TYPE[Severity.MEDIUM]
+    )
+
+
+def _victorops_state_message(report: AnalysisReport) -> str:
+    """Build the VictorOps ``state_message`` as a plain-text finding summary.
+
+    Plain text (not markdown) because VictorOps' mobile notification and the
+    REST endpoint's ``state_message`` field are surfaced as plain text in the
+    on-call alert's detail view and notification push. Each finding is a
+    numbered line; the body is capped at 20 KB (the VictorOps API limit) by
+    truncating cleanly at a newline boundary.
+    """
+    lines: list[str] = []
+    lines.append(
+        f"omen {report.version} scanned {report.origin!r} "
+        f"({report.input_type}): "
+        f"{len(report.findings)} finding{'s' if len(report.findings) != 1 else ''}"
+    )
+    if not report.findings:
+        lines.append("No findings — scan passed cleanly.")
+        return "\n".join(lines)
+
+    lines.append("")
+    for i, f in enumerate(report.findings, 1):
+        title = f.title or f.category
+        loc = ""
+        if f.evidence.source_mapping:
+            loc = f" @ {f.evidence.source_mapping[0]}"
+        lines.append(
+            f"#{i} [{f.severity.value}/{f.category}] {title}{loc}"
+        )
+        if f.description:
+            # One-line description synopsis (first non-empty line).
+            synopsis = next(
+                (l for l in f.description.splitlines() if l.strip()), ""
+            )
+            if synopsis:
+                lines.append(f"   {synopsis}")
+
+    body = "\n".join(lines)
+    # VictorOps state_message limit: 20 KB. Truncate cleanly.
+    limit = 20 * 1024
+    if len(body.encode()) > limit:
+        body = body.encode()[:limit].decode(errors="ignore").rsplit("\n", 1)[0]
+        body += "\n[truncated]"
+    return body
+
+
+def to_victorops(report: AnalysisReport, *, indent: int = 2) -> str:
+    """Render the report as a VictorOps / Splunk On-Call REST endpoint payload.
+
+    POST_V01 R3.13. One JSON document ready to POST to a VictorOps REST
+    endpoint URL (``https://alert.victorops.com/integrations/generic/…/alert/
+    <ROUTING_KEY>``) with ``Content-Type: application/json``. The document
+    matches the `VictorOps REST endpoint <https://help.victorops.com/knowledge-
+    base/victorops-restendpoint-integration/>`_ schema.
+
+    The payload carries:
+
+    - ``message_type``: CRITICAL (worst severity critical or high — pages the
+      on-call rotation), WARNING (medium — creates an alert), INFO (low or
+      informational — visible but does not page), or RECOVERY (empty report —
+      resolves any open alert for the same ``entity_id``, so re-running omen
+      on a now-clean contract automatically clears the on-call queue).
+    - ``entity_id``: a stable deduplication key (``omen/<origin>/<input_type>``)
+      so repeated scans of the same contract create one alert rather than a
+      flood — VictorOps correlates on ``entity_id`` to determine whether a
+      new payload opens a new incident or updates an existing one.
+    - ``entity_display_name``: a short human-readable headline ("omen: N
+      findings in <origin>") — the string surfaced in VictorOps' alert list
+      and mobile push notifications.
+    - ``state_message``: the full scan summary as plain text — numbered
+      findings with severity, category, location, and a one-line description
+      synopsis — the body the on-call responder reads in the alert detail view.
+    - ``monitoring_tool``: ``"omen"`` — displayed in VictorOps' "monitoring
+      tool" field to distinguish omen alerts from other integrations in the
+      same on-call timeline.
+
+    Unlike ``--format opsgenie`` (Opsgenie Create Alert API, Atlassian Ops)
+    and ``--format teams-webhook`` (Microsoft Teams channel card),
+    ``--format victorops`` targets the VictorOps (Splunk On-Call) on-call
+    alerting REST endpoint — the CI step POSTs the rendered JSON directly to
+    the routing-key URL and the scan result becomes a trackable, routable,
+    acknowledgeable incident in the on-call platform's timeline.
+
+    An empty report emits a RECOVERY payload so a clean re-scan automatically
+    resolves any previously raised VictorOps alert for the same entity.
+    """
+    n = len(report.findings)
+    entity_display_name = (
+        f"omen: {n} finding{'s' if n != 1 else ''} in {report.origin}"
+        if n
+        else f"omen: no findings in {report.origin} (RECOVERY)"
+    )
+    document: dict = {
+        "message_type": _victorops_message_type(report),
+        "entity_id": f"omen/{report.origin}/{report.input_type}",
+        "entity_display_name": entity_display_name,
+        "state_message": _victorops_state_message(report),
+        "monitoring_tool": "omen",
+    }
+    return json.dumps(document, indent=indent, sort_keys=False)
+
+
 def render(
     report: AnalysisReport,
     fmt: str,
@@ -2029,4 +2162,6 @@ def render(
         return to_teams_webhook(report)
     if fmt == "opsgenie":
         return to_opsgenie(report)
+    if fmt == "victorops":
+        return to_victorops(report)
     raise ValueError(f"unknown output format: {fmt}")

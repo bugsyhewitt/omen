@@ -4,7 +4,7 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops,teams-webhook,opsgenie}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops,teams-webhook,opsgenie,victorops}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -331,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
             "azure-devops",
             "teams-webhook",
             "opsgenie",
+            "victorops",
         ],
         help=(
             "output format. For a scan: json (default), text (a compact "
@@ -385,8 +386,15 @@ def build_parser() -> argparse.ArgumentParser:
             "description carrying all findings, per-category tags for "
             "Opsgenie routing rules, and a details map with scan metadata; "
             "POST to https://api.opsgenie.com/v2/alerts with an Authorization: "
-            "GenieKey header; POST_V01 R3.12). For --list-checks: text "
-            "(default) or json."
+            "GenieKey header; POST_V01 R3.12), or victorops (VictorOps / "
+            "Splunk On-Call REST endpoint JSON — one alert document with "
+            "message_type CRITICAL/WARNING/INFO/RECOVERY projected from the "
+            "worst severity in the report (RECOVERY for a clean scan, which "
+            "auto-resolves any open alert), a stable entity_id for dedup, a "
+            "plain-text state_message with all findings, and monitoring_tool "
+            "'omen'; POST to the routing-key URL "
+            "https://alert.victorops.com/integrations/generic/…/alert/<KEY>; "
+            "POST_V01 R3.13). For --list-checks: text (default) or json."
         ),
     )
     parser.add_argument(
