@@ -96,6 +96,18 @@ pip install vyper        # or: pipx install vyper
 Bytecode mode (`--input-type bytecode`) and address mode (`--input-type address`)
 need **no** compiler at all.
 
+### Troubleshooting: `ModuleNotFoundError: No module named 'omen'`
+
+If `pip install -e .` was run from a git worktree (during a Worker lap)
+and the worktree was later removed, the editable-install pointer
+becomes stale and `import omen` fails with `ModuleNotFoundError`.
+
+Fix: re-run `pip install -e .` from the repo root — it rewrites the
+`.pth` file to point at the current `src/`. The
+`tests/test_install_sanity.py` ship-gate asserts the `.pth` resolves to
+a real directory; if `pytest -q` reports import-collection errors,
+that test is what failed.
+
 ---
 
 ## Usage
