@@ -51,3 +51,6 @@ omen = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "install_sanity: v0.1 editable-install ship-gate (runs `pip install -e .`; safe but slow)",
+]
