@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omen"
-version = "0.1.0"
+version = "1.0.0"
 description = "A bounty-oriented hybrid scanner for Ethereum trace vulnerabilities (the MAIAN class) with modern EVM support."
 readme = "README.md"
 # [Worker decision: criteria call for Python 3.13+. requires-python is set to

@@ -2,9 +2,9 @@
 
 Skippable via `pytest -m "not ship_gate"`. Runs in the full v1.0 suite.
 
-This is omen-002's bridge: it adds the structural preconditions for the
-v1.0 RELEASE packet (omen-003) which will update the hardcoded `0.1.0`
-refs in this file to `1.0.0` plus add a CHANGELOG.md entry.
+This is omen-002's bridge: it added the structural preconditions for the
+v1.0 RELEASE packet (omen-003), which has now updated the hardcoded `0.1.0`
+refs in this file to `1.0.0` and added a CHANGELOG.md entry.
 """
 
 from __future__ import annotations
@@ -78,8 +78,8 @@ def test_wheel_builds_cleanly(tmp_path):
         [sys.executable, "-m", "build", "--wheel", "--sdist", "--outdir", str(out)],
         cwd=str(REPO_ROOT),
     )
-    wheels = list(out.glob("omen-0.1.0-*.whl"))
-    sdists = list(out.glob("omen-0.1.0.tar.gz"))
+    wheels = list(out.glob("omen-1.0.0-*.whl"))
+    sdists = list(out.glob("omen-1.0.0.tar.gz"))
     assert wheels, f"wheel not built; got: {sorted(p.name for p in out.iterdir())}"
     assert sdists, f"sdist not built; got: {sorted(p.name for p in out.iterdir())}"
     test_wheel_builds_cleanly._wheel = wheels[0]
@@ -98,19 +98,19 @@ def test_wheel_installs_into_fresh_venv(tmp_path):
     _run([str(pip), "install", "--quiet", str(wheel), "--no-deps"])
     _run([str(pip), "install", "--quiet", *_RUNTIME_DEPS])
     version = _run([str(venv_dir / "bin" / "omen"), "--version"]).stdout.strip()
-    assert version == "omen 0.1.0", f"unexpected version output: {version!r}"
+    assert version == "omen 1.0.0", f"unexpected version output: {version!r}"
     test_wheel_installs_into_fresh_venv._venv_dir = venv_dir
 
 
 @pytest.mark.ship_gate
 def test_wheel_version_importable_in_fresh_venv():
-    """`import omen; assert omen.__version__ == '0.1.0'` in fresh venv."""
+    """`import omen; assert omen.__version__ == '1.0.0'` in fresh venv."""
     venv_dir = getattr(test_wheel_installs_into_fresh_venv, "_venv_dir", None)
     if venv_dir is None:
         pytest.skip("preceding test did not install a wheel")
     py = venv_dir / "bin" / "python"
     out = _run(
-        [str(py), "-c", "import omen; assert omen.__version__ == '0.1.0'"]
+        [str(py), "-c", "import omen; assert omen.__version__ == '1.0.0'"]
     )
     assert out.returncode == 0, out.stderr
 
@@ -197,3 +197,19 @@ def test_installed_wheel_check_categories_validate():
         f"omen --check ... invalid_xyz exited {proc.returncode} (expected non-zero); "
         f"stdout: {proc.stdout!r}; stderr: {proc.stderr!r}"
     )
+
+
+@pytest.mark.ship_gate
+def test_changelog_exists_with_v1_0_0_entry():
+    """CHANGELOG.md MUST exist at the repo root and have a `## [1.0.0]` heading.
+
+    Pins the v1.0 RELEASE shape: a v1.0 cut without a CHANGELOG entry fails
+    this test. Uses bare `Path` (the test file has `from pathlib import Path`
+    at line 16, so `Path` is in scope).
+    """
+    changelog = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    assert changelog.is_file(), f"CHANGELOG.md missing at {changelog.parent}"
+    head = changelog.read_text(encoding="utf-8").splitlines()[0]
+    assert head.startswith("# "), f"CHANGELOG.md first line is {head!r}, expected a heading"
+    body = changelog.read_text(encoding="utf-8")
+    assert "## [1.0.0]" in body, "CHANGELOG.md has no `## [1.0.0]` entry — v1.0 RELEASE requires it"
