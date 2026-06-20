@@ -441,7 +441,7 @@ omen --list-checks
 ```
 
 ```
-omen 0.1.0 — 10 detection classes
+omen 1.0.0 — 10 detection classes
 
 CATEGORY         SEVERITY  MODES                          SLITHER DETECTORS
 ---------------------------------------------------------------------------
@@ -741,7 +741,7 @@ than returning a silently-empty report.
 ```json
 {
   "tool": "omen",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "input_type": "sol",
   "origin": "tests/fixtures/vulnerable-suicidal.sol",
   "checks": ["suicidal"],
@@ -782,7 +782,7 @@ omen --contract tests/fixtures/compiled.bin \
 ```
 
 ```text
-omen 0.1.0 — tests/fixtures/compiled.bin
+omen 1.0.0 — tests/fixtures/compiled.bin
 input: bytecode  checks: prodigal, suicidal, greedy, reentrancy, access-control, tx-origin, delegatecall, upgrade, overflow, weak-randomness
 findings: 2  [2 high]
 
@@ -1086,8 +1086,8 @@ omen --contract MyContract.sol --input-type sol --check all --format gitlab-sast
 {
   "version": "15.0.0",
   "scan": {
-    "analyzer": {"id": "omen", "name": "omen", "version": "0.1.0", "vendor": {"name": "omen"}},
-    "scanner": {"id": "omen", "name": "omen", "version": "0.1.0", "vendor": {"name": "omen"}},
+    "analyzer": {"id": "omen", "name": "omen", "version": "1.0.0", "vendor": {"name": "omen"}},
+    "scanner": {"id": "omen", "name": "omen", "version": "1.0.0", "vendor": {"name": "omen"}},
     "type": "sast",
     "start_time": "1970-01-01T00:00:00",
     "end_time": "1970-01-01T00:00:00",
@@ -1178,7 +1178,7 @@ omen --contract MyContract.sol --input-type sol --check all --format bitbucket-c
 {
   "report": {
     "title": "omen security scan",
-    "details": "omen 0.1.0 scanned MyContract.sol (sol); 2 findings [critical=1, high=1]",
+    "details": "omen 1.0.0 scanned MyContract.sol (sol); 2 findings [critical=1, high=1]",
     "report_type": "SECURITY",
     "reporter": "omen",
     "result": "FAILED",
@@ -1378,7 +1378,7 @@ The card carries:
   "summary": "omen security scan: 2 findings",
   "themeColor": "D13438",
   "title": "omen security scan",
-  "text": "omen 0.1.0 scanned MyContract.sol (sol); 2 findings [medium=1, high=1]",
+  "text": "omen 1.0.0 scanned MyContract.sol (sol); 2 findings [medium=1, high=1]",
   "sections": [
     {
       "activityTitle": "**#1. [high/reentrancy] reentrancy contract (slither:reentrancy-eth)**",
@@ -1682,7 +1682,7 @@ omen --diff before.json after.json
 ```
 
 ```text
-omen 0.1.0 — report diff
+omen 1.0.0 — report diff
 old: before.json
 new: after.json
 changes: +1 added  -1 removed  =3 unchanged

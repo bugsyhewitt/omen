@@ -68,8 +68,8 @@ def test_editable_install_imports_resolve_to_repo_src():
         f"import omen resolved to {src_file}, not under {SRC}/omen — "
         f"the editable install is pointing at the wrong tree"
     )
-    assert omen.__version__ == "0.1.0", (
-        f"__version__ is {omen.__version__!r}, expected '0.1.0' — "
+    assert omen.__version__ == "1.0.0", (
+        f"__version__ is {omen.__version__!r}, expected '1.0.0' — "
         f"pyproject.toml and src/omen/__init__.py disagree"
     )
 
