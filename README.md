@@ -1,5 +1,9 @@
 # omen
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/bugsyhewitt/bugsyhewitt.github.io/main/public/cards/omen.jpg" alt="omen" width="680">
+</p>
+
 **omen** is a bounty-oriented hybrid scanner for Ethereum **trace vulnerabilities** — the MAIAN class — with modern EVM support. It is built for web3 bug-bounty work, not as yet-another general-purpose linter.
 
 It detects classes of contract that leak, lock, or surrender funds — plus the two highest-loss authorization bugs, broken access control and `tx.origin` misuse — and reports each finding with reproducibility evidence (source locations or bytecode opcode offsets).
