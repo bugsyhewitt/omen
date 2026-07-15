@@ -277,6 +277,29 @@ def _sarif_level_by_value(severity_value: str) -> str:
     )
 
 
+def _parse_source_location(loc: str) -> tuple[str, int | None, int | None]:
+    """Parse omen's ``Contract.sol#start-end`` source-mapping string.
+
+    Returns *(uri, start_line, end_line)* where *start_line* and *end_line*
+    are ``None`` when absent or not parseable as integers.  This is the single
+    shared primitive for all the per-format location helpers; previously every
+    formatter duplicated these ~10 lines of partition-and-try logic.
+    """
+    if "#" not in loc:
+        return (loc, None, None)
+    uri, _, span = loc.partition("#")
+    start_s, _, end_s = span.partition("-")
+    try:
+        start = int(start_s)
+    except ValueError:
+        return (uri, None, None)
+    try:
+        end = int(end_s) if end_s else None
+    except ValueError:
+        end = None
+    return (uri, start, end)
+
+
 def _sarif_rule_id(category: str) -> str:
     return f"omen/{category}"
 
@@ -486,29 +509,15 @@ def _gha_escape_prop(text: str) -> str:
 def _gha_location(f: Finding) -> tuple[str | None, int | None, int | None]:
     """Extract (file, startLine, endLine) for a finding's GHA annotation.
 
-    Reuses omen's ``Contract.sol#12-18`` source-mapping shape (the same split
-    the SARIF physicalLocation helper performs): the part before ``#`` is the
-    file, the ``start-end`` after it the line range. A bytecode finding (no
-    source mapping) yields ``(None, None, None)`` — its annotation is emitted
-    without a ``file``/``line`` anchor, which GitHub still surfaces in the
-    Actions log (it just isn't pinned to a diff line).
+    Reuses omen's ``Contract.sol#12-18`` source-mapping shape via
+    ``_parse_source_location``. A bytecode finding (no source mapping) yields
+    ``(None, None, None)`` — its annotation is emitted without a
+    ``file``/``line`` anchor, which GitHub still surfaces in the Actions log
+    (it just isn't pinned to a diff line).
     """
     if not f.evidence.source_mapping:
         return (None, None, None)
-    loc = f.evidence.source_mapping[0]
-    if "#" not in loc:
-        return (loc, None, None)
-    uri, _, span = loc.partition("#")
-    start_s, _, end_s = span.partition("-")
-    try:
-        start = int(start_s)
-    except ValueError:
-        return (uri, None, None)
-    try:
-        end = int(end_s) if end_s else None
-    except ValueError:
-        end = None
-    return (uri, start, end)
+    return _parse_source_location(f.evidence.source_mapping[0])
 
 
 def _gha_line(f: Finding) -> str:
@@ -688,27 +697,13 @@ def _checkstyle_location(f: Finding) -> tuple[str, int | None, int | None]:
 
     Checkstyle is **file-keyed** (every ``<error>`` lives inside a ``<file>``),
     so a finding with no locatable source must still anchor to *some* file name.
-    We reuse omen's evidence shape — the same ``Contract.sol#start-end`` mapping
-    the SARIF and gha helpers split — with a graceful fallback chain so a
+    Uses ``_parse_source_location`` with a graceful fallback chain so a
     bytecode-mode finding (no source mapping) anchors to the contract identifier
     instead of being silently dropped: source mapping first, then contract, then
     ``"<unknown>"`` as a last-resort sentinel so the document stays well-formed.
     """
     if f.evidence.source_mapping:
-        loc = f.evidence.source_mapping[0]
-        if "#" not in loc:
-            return (loc, None, None)
-        uri, _, span = loc.partition("#")
-        start_s, _, end_s = span.partition("-")
-        try:
-            start = int(start_s)
-        except ValueError:
-            return (uri, None, None)
-        try:
-            end = int(end_s) if end_s else None
-        except ValueError:
-            end = None
-        return (uri, start, end)
+        return _parse_source_location(f.evidence.source_mapping[0])
     if f.contract:
         return (f.contract, None, None)
     return ("<unknown>", None, None)
@@ -911,42 +906,25 @@ def _sonarqube_location(f: Finding) -> "dict | None":
     SonarQube's generic issue schema *requires* every issue to carry a
     ``primaryLocation`` with at least a ``message`` and a ``filePath``. A
     finding with a source mapping (``Contract.sol#start-end``) supplies the
-    file path and a ``textRange`` (a 1-based ``startLine``/``endLine`` pair,
-    matching the SARIF helper's parse); a bytecode-mode finding (no source
-    mapping) has no file to anchor to and is therefore not representable as a
-    SonarQube issue. We return ``None`` in that case and the caller skips the
-    finding rather than emit a malformed issue — the honest "this format
-    cannot represent that finding" failure mode, parallel to how GitHub
-    Actions annotations degrade to a `file`-less command for bytecode but the
-    SonarQube schema strictly requires the field.
+    file path and a ``textRange`` (a 1-based ``startLine``/``endLine`` pair);
+    a bytecode-mode finding (no source mapping) has no file to anchor to and
+    is therefore not representable as a SonarQube issue. We return ``None`` in
+    that case and the caller skips the finding rather than emit a malformed
+    issue.
     """
     if not f.evidence.source_mapping:
         return None
-    loc = f.evidence.source_mapping[0]
-    file_path = loc
-    text_range: dict | None = None
-    if "#" in loc:
-        file_path, _, span = loc.partition("#")
-        start_s, _, end_s = span.partition("-")
-        try:
-            start = int(start_s)
-        except ValueError:
-            start = None
-        try:
-            end = int(end_s) if end_s else None
-        except ValueError:
-            end = None
-        if start is not None:
-            text_range = {"startLine": start}
-            if end is not None:
-                text_range["endLine"] = end
+    file_path, start, end = _parse_source_location(f.evidence.source_mapping[0])
     if not file_path:
         return None
     primary: dict = {
         "message": f.description or f.title,
         "filePath": file_path,
     }
-    if text_range:
+    if start is not None:
+        text_range: dict = {"startLine": start}
+        if end is not None:
+            text_range["endLine"] = end
         primary["textRange"] = text_range
     return primary
 
@@ -1084,30 +1062,13 @@ def _gitlab_sast_location(f: Finding) -> "dict | None":
     GitLab's SAST schema requires every vulnerability to carry a ``location``
     with at least a ``file`` (and recommends ``start_line``/``end_line``).
     Source-mode findings parse the file path and 1-based line range from
-    omen's ``Contract.sol#start-end`` mapping (the same shape every other
-    location-aware formatter consumes). Bytecode-mode findings have no file
-    to anchor to — GitLab has no concept of "an opcode offset is the
-    location" — so we return ``None`` and the caller skips the finding, the
-    honest "this format cannot represent that finding" failure mode parallel
-    to the SonarQube formatter's bytecode handling.
+    omen's ``Contract.sol#start-end`` mapping via ``_parse_source_location``.
+    Bytecode-mode findings have no file to anchor to, so we return ``None``
+    and the caller skips the finding (parallel to the SonarQube formatter).
     """
     if not f.evidence.source_mapping:
         return None
-    loc = f.evidence.source_mapping[0]
-    file_path = loc
-    start: int | None = None
-    end: int | None = None
-    if "#" in loc:
-        file_path, _, span = loc.partition("#")
-        start_s, _, end_s = span.partition("-")
-        try:
-            start = int(start_s)
-        except ValueError:
-            start = None
-        try:
-            end = int(end_s) if end_s else None
-        except ValueError:
-            end = None
+    file_path, start, end = _parse_source_location(f.evidence.source_mapping[0])
     if not file_path:
         return None
     location: dict = {"file": file_path}
@@ -1235,13 +1196,7 @@ def to_gitlab_sast(report: AnalysisReport, *, indent: int = 2) -> str:
     which already stamps it; the SAST report is a content artifact.
     """
     vendor = {"name": "omen"}
-    analyzer = {
-        "id": "omen",
-        "name": "omen",
-        "version": __version__,
-        "vendor": vendor,
-    }
-    scanner = {
+    tool_block = {
         "id": "omen",
         "name": "omen",
         "version": __version__,
@@ -1274,8 +1229,8 @@ def to_gitlab_sast(report: AnalysisReport, *, indent: int = 2) -> str:
     document = {
         "version": _GITLAB_SAST_SCHEMA_VERSION,
         "scan": {
-            "analyzer": analyzer,
-            "scanner": scanner,
+            "analyzer": tool_block,
+            "scanner": tool_block,
             "type": "sast",
             "start_time": _GITLAB_SAST_EPOCH,
             "end_time": _GITLAB_SAST_EPOCH,
@@ -1349,13 +1304,10 @@ def _bitbucket_annotation(f: Finding, idx: int) -> "dict | None":
     """
     fp = finding_fingerprint(f)
     external_id = f"omen-{fp}" if fp else f"omen-{idx}"
-    summary_parts = [f"[{f.severity.value}/{f.category}]"]
-    if f.confidence:
-        summary_parts[0] = f"[{f.severity.value}/{f.category}/{f.confidence}]"
+    conf_part = f"/{f.confidence}" if f.confidence else ""
+    tag = f"[{f.severity.value}/{f.category}{conf_part}]"
     msg = f.description or f.title or ""
-    if msg:
-        summary_parts.append(msg)
-    summary = " ".join(summary_parts).strip()
+    summary = f"{tag} {msg}".strip() if msg else tag
     annotation: dict = {
         "external_id": external_id,
         "annotation_type": _BITBUCKET_ANNOTATION_TYPE,
@@ -1364,16 +1316,7 @@ def _bitbucket_annotation(f: Finding, idx: int) -> "dict | None":
     }
     # Try to extract a path + line from the source mapping.
     if f.evidence.source_mapping:
-        loc = f.evidence.source_mapping[0]
-        file_path = loc
-        line: int | None = None
-        if "#" in loc:
-            file_path, _, span = loc.partition("#")
-            start_s, _, _end_s = span.partition("-")
-            try:
-                line = int(start_s)
-            except ValueError:
-                line = None
+        file_path, line, _end = _parse_source_location(f.evidence.source_mapping[0])
         if file_path and line is not None:
             annotation["path"] = file_path
             annotation["line"] = line
@@ -1537,25 +1480,16 @@ def _azdo_escape(text: str) -> str:
 def _azdo_location(f: Finding) -> tuple[str | None, int | None, int | None]:
     """Extract (sourcepath, linenumber, columnnumber) for an AzDO annotation.
 
-    Reuses omen's ``Contract.sol#12-18`` source-mapping shape (same split as
-    the SARIF/gha helpers): the part before ``#`` is the file, the start of
-    the line range is the line. Azure DevOps' ``task.logissue`` carries a
-    single ``linenumber`` (not a range), so the end line is discarded. omen
-    has no column data, so ``columnnumber`` is always ``None``. A bytecode
-    finding (no source mapping) yields ``(None, None, None)`` and the
-    annotation is emitted without source-anchor properties.
+    Uses ``_parse_source_location`` to parse omen's ``Contract.sol#12-18``
+    mapping. Azure DevOps' ``task.logissue`` carries a single ``linenumber``
+    (not a range), so the end line is always returned as ``None``. omen has
+    no column data, so ``columnnumber`` is always ``None``. A bytecode finding
+    (no source mapping) yields ``(None, None, None)`` and the annotation is
+    emitted without source-anchor properties.
     """
     if not f.evidence.source_mapping:
         return (None, None, None)
-    loc = f.evidence.source_mapping[0]
-    if "#" not in loc:
-        return (loc, None, None)
-    uri, _, span = loc.partition("#")
-    start_s, _, _end_s = span.partition("-")
-    try:
-        start = int(start_s)
-    except ValueError:
-        return (uri, None, None)
+    uri, start, _end = _parse_source_location(f.evidence.source_mapping[0])
     return (uri, start, None)
 
 
@@ -1677,24 +1611,17 @@ def _teams_location(f: Finding) -> str | None:
     """Render a finding's source mapping as a single ``file:line`` string.
 
     The Teams MessageCard ``facts`` list is plain key/value text — there is no
-    structured link-to-source field. We collapse omen's ``Contract.sol#12-18``
-    source-mapping shape (same parse the SARIF/azdo helpers use) into the
-    conventional ``file:line`` form a reviewer can recognize. A finding with no
-    source mapping (bytecode mode) returns ``None`` and the caller omits the
-    location fact rather than rendering an empty value.
+    structured link-to-source field. Uses ``_parse_source_location`` to collapse
+    omen's ``Contract.sol#12-18`` mapping into the conventional ``file:line``
+    form a reviewer can recognize. A finding with no source mapping (bytecode
+    mode) returns ``None`` and the caller omits the location fact.
     """
     if not f.evidence.source_mapping:
         return None
-    loc = f.evidence.source_mapping[0]
-    if "#" not in loc:
-        return loc
-    uri, _, span = loc.partition("#")
-    start_s, _, _end_s = span.partition("-")
-    try:
-        int(start_s)
-    except ValueError:
+    uri, start, _end = _parse_source_location(f.evidence.source_mapping[0])
+    if start is None:
         return uri
-    return f"{uri}:{start_s}"
+    return f"{uri}:{start}"
 
 
 def _teams_section(index: int, f: Finding) -> dict:
@@ -1786,25 +1713,20 @@ def to_teams_webhook(report: AnalysisReport, *, indent: int = 2) -> str:
 
     shown = len(report.findings)
     total = report.total_findings if report.total_findings is not None else shown
-    severity_summary = ", ".join(
-        f"{sev.value}={counts[sev.value]}" for sev in SEVERITY_ORDER if counts[sev.value]
-    )
-    if total > shown:
-        detail_findings = f"{shown} of {total} findings shown (--limit)"
-    else:
-        detail_findings = f"{shown} finding{'s' if shown != 1 else ''}"
-    summary_line = (
-        f"omen {report.version} scanned {report.origin} ({report.input_type}); "
-        f"{detail_findings}"
-    )
-    if severity_summary:
-        summary_line = f"{summary_line} [{severity_summary}]"
-
+    scan_prefix = f"omen {report.version} scanned {report.origin} ({report.input_type}); "
     if shown == 0:
-        summary_line = (
-            f"omen {report.version} scanned {report.origin} ({report.input_type}); "
-            f"no findings"
+        summary_line = f"{scan_prefix}no findings"
+    else:
+        severity_summary = ", ".join(
+            f"{sev.value}={counts[sev.value]}" for sev in SEVERITY_ORDER if counts[sev.value]
         )
+        if total > shown:
+            detail_findings = f"{shown} of {total} findings shown (--limit)"
+        else:
+            detail_findings = f"{shown} finding{'s' if shown != 1 else ''}"
+        summary_line = f"{scan_prefix}{detail_findings}"
+        if severity_summary:
+            summary_line = f"{summary_line} [{severity_summary}]"
 
     sections = [_teams_section(i + 1, f) for i, f in enumerate(report.findings)]
 
