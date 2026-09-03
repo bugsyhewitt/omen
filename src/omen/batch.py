@@ -33,7 +33,6 @@ from .solc_env import SolcUnavailableError
 from .sources import InputError
 from .vyper_env import VyperUnavailableError
 
-
 # Severity ordering for the batch aggregate summary (POST_V01 Rotation 2,
 # R2.12). Worst-first so the roll-up reads the same direction as the default
 # per-contract --sort severity and the --format text summary. Kept local to
