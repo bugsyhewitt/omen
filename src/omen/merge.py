@@ -27,7 +27,6 @@ stream — whatever ``-o`` produced.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from .findings import finding_fingerprint, load_baseline_findings, severity_rank

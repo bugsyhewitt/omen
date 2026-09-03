@@ -1,4 +1,5 @@
-"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit, checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops, teams-webhook, opsgenie.
+"""Output formatting for omen: text, JSON, H1-flavored markdown, SARIF, gha, junit,
+checkstyle, sonarqube, gitlab-sast, bitbucket-code-insights, azure-devops, teams-webhook, opsgenie.
 
 JSON is the machine-readable contract. H1-markdown produces a report body
 shaped for a HackerOne submission: title, severity, summary, evidence, and
@@ -1879,7 +1880,8 @@ def to_opsgenie(report: AnalysisReport, *, indent: int = 2) -> str:
     on-call integration gets a visible "omen ran, found nothing" trace rather
     than silent empty output.
     """
-    message = f"omen security scan: {len(report.findings)} finding{'s' if len(report.findings) != 1 else ''}"
+    count = len(report.findings)
+    message = f"omen security scan: {count} finding{'s' if count != 1 else ''}"
     if not report.findings:
         message = "omen security scan: no findings"
     # Opsgenie API hard limit: message ≤ 130 chars.
@@ -1975,7 +1977,7 @@ def _victorops_state_message(report: AnalysisReport) -> str:
         if f.description:
             # One-line description synopsis (first non-empty line).
             synopsis = next(
-                (l for l in f.description.splitlines() if l.strip()), ""
+                (line for line in f.description.splitlines() if line.strip()), ""
             )
             if synopsis:
                 lines.append(f"   {synopsis}")

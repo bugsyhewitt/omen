@@ -4,7 +4,8 @@
          --input-type {sol,vyper,bytecode,address}
          --check CATEGORY[,CATEGORY...]   (a single category, 'all', or a list)
          [--exclude-check CATEGORY[,CATEGORY...]]   (inverse selector; not 'all')
-         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,bitbucket-code-insights,azure-devops,teams-webhook,opsgenie,victorops}]
+         [--rpc-url URL] [--format {json,text,h1md,sarif,gha,junit,checkstyle,sonarqube,
+         bitbucket-code-insights,azure-devops,teams-webhook,opsgenie,victorops}]
          [--min-confidence {low,medium,high}]
          [--min-severity {informational,low,medium,high,critical}]
          [--severity-override CATEGORY=SEVERITY[,...]]
@@ -42,6 +43,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import CATEGORIES, __version__
 

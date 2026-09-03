@@ -38,8 +38,6 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from . import CATEGORIES
-
 # The set of CLI options a config file may set, with the validation each one
 # uses. ``contract``, ``batch``, ``input_type`` and ``rpc_url`` are free-form
 # strings (paths / URLs / addresses); the rest are constrained choices that
